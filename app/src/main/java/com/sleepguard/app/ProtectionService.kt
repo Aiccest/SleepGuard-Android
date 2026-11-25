@@ -70,7 +70,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     private suspend fun monitoringLoop() {
-        while (isActive && !triggered) {
+        while (currentCoroutineContext().isActive && !triggered) {
             val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val seconds = prefs.getInt(KEY_MONITOR, 10).coerceIn(5, 15)
             val interval = prefs.getInt(KEY_INTERVAL, 5).coerceIn(1, 30)
