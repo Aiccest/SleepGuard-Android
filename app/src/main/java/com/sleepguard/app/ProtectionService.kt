@@ -109,7 +109,11 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             stopSelf()
             return START_NOT_STICKY
         }
-        startForeground(NOTIFICATION_ID, notification("低功耗保护已启动：等待媒体播放"))
+        startForeground(NOTIFICATION_ID, notification("低功耗保护已启动"))
+        if (intent?.action == ACTION_SELECTION_CHANGED) {
+            refreshPlaybackState()
+            return START_STICKY
+        }
         if (hasMediaAccess()) {
             try {
                 mediaSessionManager.addOnActiveSessionsChangedListener(
@@ -145,9 +149,16 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     private fun refreshPlaybackState() {
+        val selectedPackages = MediaAppPreferences.getSelectedPackages(this)
+        if (selectedPackages.isEmpty()) {
+            setMediaPlaying(false)
+            updateNotification("尚未选择媒体应用；摄像头保持关闭")
+            return
+        }
         val playing = controllerCallbacks.keys.any { controller ->
             val state = controller.playbackState?.state
-            state == PlaybackState.STATE_PLAYING || state == PlaybackState.STATE_BUFFERING
+            controller.packageName in selectedPackages &&
+                (state == PlaybackState.STATE_PLAYING || state == PlaybackState.STATE_BUFFERING)
         }
         setMediaPlaying(playing)
     }
@@ -167,7 +178,11 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             unregisterMotionSensor()
             scope.launch { withContext(Dispatchers.Main) { cameraProvider?.unbindAll() } }
             consecutiveOpenEyeChecks = 0
-            updateNotification("没有媒体播放；摄像头保持关闭")
+            val hasSelection = MediaAppPreferences.getSelectedPackages(this).isNotEmpty()
+            updateNotification(
+                if (hasSelection) "所选应用当前没有媒体播放；摄像头保持关闭"
+                else "尚未选择媒体应用；摄像头保持关闭"
+            )
         }
     }
 
@@ -327,9 +342,16 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     private fun pauseActiveMediaSessions() {
-        controllerCallbacks.keys.forEach { controller ->
-            try { controller.transportControls.pause() } catch (_: Exception) { }
-        }
+        val selectedPackages = MediaAppPreferences.getSelectedPackages(this)
+        controllerCallbacks.keys
+            .filter { it.packageName in selectedPackages }
+            .filter { controller ->
+                val state = controller.playbackState?.state
+                state == PlaybackState.STATE_PLAYING || state == PlaybackState.STATE_BUFFERING
+            }
+            .forEach { controller ->
+                try { controller.transportControls.pause() } catch (_: Exception) { }
+            }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
@@ -379,6 +401,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     companion object {
         const val ACTION_START = "com.sleepguard.app.START"
         const val ACTION_STOP = "com.sleepguard.app.STOP"
+        const val ACTION_SELECTION_CHANGED = "com.sleepguard.app.SELECTION_CHANGED"
         private const val EYES_CLOSED_REQUIRED_MS = 3000L
         private const val PHONE_STILL_REQUIRED_MS = 8000L
         private const val NO_ACTIVITY_REQUIRED_MS = 5 * 60_000L
