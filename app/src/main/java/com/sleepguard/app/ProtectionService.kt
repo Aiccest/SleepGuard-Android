@@ -240,8 +240,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             updateNotification("正在进行短时睡眠确认")
             try {
                 runCameraWindow()
-            } catch (_: CancellationException) {
-                throw
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Exception) {
                 updateNotification("本轮摄像头检测未能启动；稍后重试")
             }
@@ -253,7 +253,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     3 -> 25
                     else -> 30
                 }
-                updateNotification("本轮未确认睡眠；约$minutes分钟后复查")
+                updateNotification("本轮未确认睡眠；约${minutes}分钟后复查")
                 scheduleDetection(minutes * 60_000L)
             }
         }
