@@ -187,7 +187,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             triggered.set(false)
             eyesClosedSince = 0L
             consecutiveOpenEyeChecks = 0
-            updateNotification("当前不在所选应用；摄像头与睡眠检测已暂停")
+            updateNotification("已离开所选应用，睡眠检测已暂停")
         }
     }
 
@@ -230,7 +230,6 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             cameraJob?.cancel()
             scope.launch { withContext(Dispatchers.Main) { cameraProvider?.unbindAll() } }
             scheduleDetection(NO_ACTIVITY_REQUIRED_MS)
-            updateNotification("检测到设备活动；重新计算空闲时间")
         } else if (stillSince == 0L) {
             stillSince = now
         }
