@@ -376,12 +376,6 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             triggered.set(false)
             return
         }
-        pauseActiveMediaSessions()
-        delay(500)
-        if (!screenInteractive || !power.isInteractive || !mediaPlaying) {
-            triggered.set(false)
-            return
-        }
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         if (dpm.isAdminActive(ComponentName(this, SleepGuardAdminReceiver::class.java))) {
             dpm.lockNow()
@@ -389,19 +383,6 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             updateNotification("已暂停媒体，但未激活设备管理员，无法自动锁屏")
             triggered.set(false)
         }
-    }
-
-    private fun pauseActiveMediaSessions() {
-        val selectedPackages = MediaAppPreferences.getSelectedPackages(this)
-        controllerCallbacks.keys
-            .filter { it.packageName in selectedPackages }
-            .filter { controller ->
-                val state = controller.playbackState?.state
-                state == PlaybackState.STATE_PLAYING || state == PlaybackState.STATE_BUFFERING
-            }
-            .forEach { controller ->
-                try { controller.transportControls.pause() } catch (_: Exception) { }
-            }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
