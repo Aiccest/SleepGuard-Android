@@ -61,7 +61,7 @@ private fun SleepGuardScreen(activity: MainActivity) {
     var running by remember { mutableStateOf(false) }
     MaterialTheme {
         Surface(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("SleepGuard", style = MaterialTheme.typography.headlineLarge)
                 Text("智能防睡眠耗电管家 · 完整功能测试版")
                 Card(Modifier.fillMaxWidth()) {
