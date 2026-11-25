@@ -391,9 +391,6 @@ private fun MonitorAppsScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
-                TextButton(onClick = {
-                    onSelectionChanged(allApps.map { it.packageName }.toSet())
-                }) { Text("全选") }
                 Text("选择后，该应用处于前台时启动睡眠监测；应用内页面、视频、直播和全屏均纳入。",
                     modifier = Modifier.padding(start = 8.dp),
                     style = MaterialTheme.typography.labelSmall,
