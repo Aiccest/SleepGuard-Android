@@ -470,7 +470,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         }
 
         fun stop(context: Context) {
-            context.startService(Intent(context, ProtectionService::class.java).setAction(ACTION_STOP))
+            context.stopService(Intent(context, ProtectionService::class.java))
         }
     }
 }
