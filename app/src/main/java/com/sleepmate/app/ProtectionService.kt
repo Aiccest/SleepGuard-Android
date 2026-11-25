@@ -181,10 +181,9 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     private fun setMediaPlaying(playing: Boolean) {
-        val changed = mediaPlaying != playing
+        if (mediaPlaying == playing) return
         mediaPlaying = playing
         if (playing) {
-            if (!changed) return
             lastActivityAt = SystemClock.elapsedRealtime()
             stillSince = 0L
             if (screenInteractive && !triggered.get()) {
