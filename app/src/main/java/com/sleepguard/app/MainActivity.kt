@@ -6,13 +6,11 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -22,12 +20,12 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.core.app.ActivityCompat
 
 class MainActivity : ComponentActivity() {
     private val notificationPermission = registerForActivityResult(
@@ -43,10 +41,17 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private const val PREFS_NAME = "sleepguard_settings"
+private const val KEY_MONITOR_SECONDS = "monitor_seconds"
+private const val KEY_INTERVAL_MINUTES = "interval_minutes"
+
 @Composable
 private fun SleepGuardScreen(activity: MainActivity) {
+    val prefs = remember { activity.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
     var running by remember { mutableStateOf(false) }
     var adminActive by remember { mutableStateOf(isAdminActive(activity)) }
+    var monitorSeconds by remember { mutableIntStateOf(prefs.getInt(KEY_MONITOR_SECONDS, 10).coerceIn(5, 15)) }
+    var intervalMinutes by remember { mutableIntStateOf(prefs.getInt(KEY_INTERVAL_MINUTES, 5).coerceIn(1, 30)) }
 
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
@@ -55,13 +60,40 @@ private fun SleepGuardScreen(activity: MainActivity) {
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Text("SleepGuard", style = MaterialTheme.typography.headlineLarge)
-                Text("智能防睡眠耗电保护 · V1.0 基础测试版")
+                Text("智能防睡眠耗电保护 · 功能测试版")
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(if (running) "服务状态：运行中" else "服务状态：未启动",
                             style = MaterialTheme.typography.titleMedium)
-                        Text("当前版本只验证后台服务和锁屏授权，不会自动判断睡眠，也不会自动锁屏。")
-                        Text("后续版本接入摄像头与传感器后，才会启用自动保护。")
+                        Text("当前版本用于测试后台服务和锁屏授权。摄像头睡眠识别、媒体自动暂停尚未接入。")
+                    }
+                }
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("监测参数", style = MaterialTheme.typography.titleMedium)
+                        Text("单次监测时长：${monitorSeconds} 秒")
+                        Slider(
+                            value = monitorSeconds.toFloat(),
+                            onValueChange = {
+                                monitorSeconds = it.toInt().coerceIn(5, 15)
+                                prefs.edit().putInt(KEY_MONITOR_SECONDS, monitorSeconds).apply()
+                            },
+                            valueRange = 5f..15f,
+                            steps = 9,
+                            enabled = !running
+                        )
+                        Text("两次监测间隔：${intervalMinutes} 分钟")
+                        Slider(
+                            value = intervalMinutes.toFloat(),
+                            onValueChange = {
+                                intervalMinutes = it.toInt().coerceIn(1, 30)
+                                prefs.edit().putInt(KEY_INTERVAL_MINUTES, intervalMinutes).apply()
+                            },
+                            valueRange = 1f..30f,
+                            steps = 28,
+                            enabled = !running
+                        )
+                        Text("测试期间请先停止服务再调整参数；重新启动后生效。")
                     }
                 }
                 Card(modifier = Modifier.fillMaxWidth()) {
@@ -115,7 +147,7 @@ private fun SleepGuardScreen(activity: MainActivity) {
                 ) { Text("测试锁屏（请先保存工作）") }
 
                 Spacer(Modifier.height(4.dp))
-                Text("小米手机提示：安装后如服务容易被系统停止，可在系统设置中允许自启动并将电池策略设为不限制。不要为此关闭系统安全保护。")
+                Text("小米手机提示：如服务容易被系统停止，可在系统设置中允许自启动并将电池策略设为不限制。")
             }
         }
     }
