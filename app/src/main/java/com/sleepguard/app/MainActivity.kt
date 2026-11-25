@@ -106,7 +106,7 @@ private fun SleepGuardScreen(activity: MainActivity) {
                         ProtectionService.start(activity)
                         running = true
                     }
-                }, enabled = !running, Modifier.fillMaxWidth()) { Text("启动智能保护") }
+                }, enabled = !running, modifier = Modifier.fillMaxWidth()) { Text("启动智能保护") }
                 OutlinedButton(onClick = {
                     ProtectionService.stop(activity)
                     running = false
