@@ -173,8 +173,9 @@ private fun PageHeader(title: String, onBack: () -> Unit) {
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        TextButton(onClick = onBack) { Text("‹ 返回") }
         Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.weight(1f))
+        TextButton(onClick = onBack) { Text("返回 ›") }
     }
 }
 
@@ -195,7 +196,7 @@ private fun HomeScreen(
             Image(
                 painter = painterResource(R.drawable.ic_sleepguard_foreground),
                 contentDescription = "SleepGuard 正式图标",
-                modifier = Modifier.size(72.dp),
+                modifier = Modifier.size(56.dp).padding(4.dp),
                 contentScale = ContentScale.Fit
             )
             Spacer(Modifier.width(12.dp))
@@ -423,7 +424,7 @@ private fun AboutScreen(activity: MainActivity, onBack: () -> Unit) {
             Image(
                 painter = painterResource(R.drawable.ic_sleepguard_foreground),
                 contentDescription = "SleepGuard 正式图标",
-                modifier = Modifier.size(88.dp),
+                modifier = Modifier.size(72.dp).padding(5.dp),
                 contentScale = ContentScale.Fit
             )
             Text("SleepGuard", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
