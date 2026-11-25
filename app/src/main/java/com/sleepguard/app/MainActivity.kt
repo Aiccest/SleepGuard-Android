@@ -5,6 +5,8 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -13,6 +15,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -27,14 +30,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class InstalledMediaApp(
     val packageName: String,
-    val label: String
+    val label: String,
+    val icon: Bitmap
 )
 
 private enum class Screen {
@@ -47,6 +57,8 @@ class MainActivity : ComponentActivity() {
     var listenerEnabled by mutableStateOf(false)
     var notificationsGranted by mutableStateOf(true)
     var installedMediaApps by mutableStateOf<List<InstalledMediaApp>>(emptyList())
+    var appsLoading by mutableStateOf(false)
+    private var appLoadJob: Job? = null
 
     private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         cameraGranted = it
@@ -76,18 +88,36 @@ class MainActivity : ComponentActivity() {
 
     @Suppress("DEPRECATION")
     private fun loadLaunchableApps() {
-        val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        installedMediaApps = packageManager.queryIntentActivities(launcherIntent, 0)
-            .mapNotNull { info ->
-                val appPackage = info.activityInfo?.packageName ?: return@mapNotNull null
-                if (appPackage == packageName) return@mapNotNull null
-                InstalledMediaApp(
-                    packageName = appPackage,
-                    label = info.loadLabel(packageManager)?.toString()?.ifBlank { appPackage } ?: appPackage
-                )
+        if (appsLoading) return
+        appLoadJob?.cancel()
+        appLoadJob = lifecycleScope.launch {
+            appsLoading = true
+            val apps = withContext(Dispatchers.IO) {
+                val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                packageManager.queryIntentActivities(launcherIntent, 0)
+                    .mapNotNull { info ->
+                        val appPackage = info.activityInfo?.packageName ?: return@mapNotNull null
+                        if (appPackage == packageName) return@mapNotNull null
+                        try {
+                            val drawable = info.loadIcon(packageManager)
+                            val width = 96
+                            val bitmap = Bitmap.createBitmap(width, width, Bitmap.Config.ARGB_8888)
+                            val canvas = Canvas(bitmap)
+                            drawable.setBounds(0, 0, width, width)
+                            drawable.draw(canvas)
+                            InstalledMediaApp(
+                                packageName = appPackage,
+                                label = info.loadLabel(packageManager)?.toString()?.ifBlank { appPackage } ?: appPackage,
+                                icon = bitmap
+                            )
+                        } catch (_: Exception) { null }
+                    }
+                    .distinctBy { it.packageName }
+                    .sortedBy { it.label.lowercase() }
             }
-            .distinctBy { it.packageName }
-            .sortedBy { it.label.lowercase() }
+            installedMediaApps = apps
+            appsLoading = false
+        }
     }
 
     fun requestCamera() = cameraPermission.launch(android.Manifest.permission.CAMERA)
@@ -329,9 +359,13 @@ private fun MediaAppsScreen(
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     val allApps = activity.installedMediaApps
-    val filteredApps = remember(allApps, query) {
-        if (query.isBlank()) allApps
-        else allApps.filter {
+    val sortedApps = remember(allApps, selectedPackages) {
+        allApps.sortedWith(compareByDescending<InstalledMediaApp> { it.packageName in selectedPackages }
+            .thenBy { it.label.lowercase() })
+    }
+    val filteredApps = remember(sortedApps, query) {
+        if (query.isBlank()) sortedApps
+        else sortedApps.filter {
             it.label.contains(query.trim(), ignoreCase = true) ||
                 it.packageName.contains(query.trim(), ignoreCase = true)
         }
@@ -353,17 +387,27 @@ private fun MediaAppsScreen(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            TextButton(onClick = {
-                onSelectionChanged(allApps.map { it.packageName }.toSet())
-            }) { Text("全选") }
+            Column {
+                TextButton(onClick = {
+                    onSelectionChanged(allApps.map { it.packageName }.toSet())
+                }) { Text("全选") }
+                Text("仅选择有桌面启动入口的应用；不代表每个应用都支持媒体播放识别。",
+                    modifier = Modifier.padding(start = 8.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             TextButton(onClick = { onSelectionChanged(emptySet()) }) { Text("全不选") }
             Spacer(Modifier.weight(1f))
             Text("已选 ${selectedPackages.size} 个", style = MaterialTheme.typography.labelLarge)
             TextButton(onClick = { activity.refreshPermissions() }) { Text("刷新") }
         }
         HorizontalDivider()
-        if (filteredApps.isEmpty()) {
-            Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+        if (activity.appsLoading) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        } else if (filteredApps.isEmpty()) {
+            Box(Modifier.weight(1f).fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
                 Text(if (allApps.isEmpty()) "没有读取到可启动的应用，请刷新。" else "没有找到匹配的应用。")
             }
         } else {
@@ -372,22 +416,29 @@ private fun MediaAppsScreen(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
             ) {
                 items(filteredApps, key = { it.packageName }) { app ->
+                    val selected = app.packageName in selectedPackages
                     Row(
-                        Modifier.fillMaxWidth().padding(vertical = 7.dp),
+                        Modifier.fillMaxWidth()
+                            .clickable {
+                                val updated = selectedPackages.toMutableSet()
+                                if (selected) updated.remove(app.packageName) else updated.add(app.packageName)
+                                onSelectionChanged(updated)
+                            }
+                            .padding(vertical = 9.dp, horizontal = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Image(
+                            bitmap = app.icon.asImageBitmap(),
+                            contentDescription = app.label + " 图标",
+                            modifier = Modifier.size(42.dp),
+                            contentScale = ContentScale.Fit
+                        )
+                        Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
                             Text(app.label, style = MaterialTheme.typography.bodyLarge)
                             Text(app.packageName, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Checkbox(
-                            checked = app.packageName in selectedPackages,
-                            onCheckedChange = { checked ->
-                                val updated = selectedPackages.toMutableSet()
-                                if (checked) updated.add(app.packageName) else updated.remove(app.packageName)
-                                onSelectionChanged(updated)
-                            }
-                        )
+                        Checkbox(checked = selected, onCheckedChange = null)
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                 }
