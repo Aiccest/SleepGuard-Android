@@ -45,6 +45,7 @@ class MainActivity : ComponentActivity() {
     var cameraGranted by mutableStateOf(false)
     var adminActive by mutableStateOf(false)
     var listenerEnabled by mutableStateOf(false)
+    var notificationsGranted by mutableStateOf(true)
     var installedMediaApps by mutableStateOf<List<InstalledMediaApp>>(emptyList())
 
     private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -55,7 +56,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         refreshPermissions()
-        if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         setContent { SleepGuardApp(this) }
     }
 
@@ -66,6 +66,7 @@ class MainActivity : ComponentActivity() {
 
     fun refreshPermissions() {
         cameraGranted = checkSelfPermission(android.Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        notificationsGranted = Build.VERSION.SDK_INT < 33 || checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         adminActive = dpm.isAdminActive(ComponentName(this, SleepGuardAdminReceiver::class.java))
         listenerEnabled = Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
@@ -90,6 +91,11 @@ class MainActivity : ComponentActivity() {
     }
 
     fun requestCamera() = cameraPermission.launch(android.Manifest.permission.CAMERA)
+    fun requestNotificationsIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33 && !notificationsGranted) {
+            notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
     fun openNotificationAccess() = startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
 
     fun openAdminActivation() {
@@ -133,6 +139,7 @@ private fun SleepGuardApp(activity: MainActivity) {
                         if (!activity.cameraGranted) activity.requestCamera()
                         else if (!activity.listenerEnabled) activity.openNotificationAccess()
                         else {
+                            activity.requestNotificationsIfNeeded()
                             ProtectionService.start(activity)
                             running = true
                         }
@@ -229,6 +236,7 @@ private fun HomeScreen(
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("权限状态", style = MaterialTheme.typography.titleMedium)
                 PermissionLine("摄像头", activity.cameraGranted)
+                PermissionLine("运行通知（Android 13+）", activity.notificationsGranted)
                 PermissionLine("媒体通知访问", activity.listenerEnabled)
                 PermissionLine("设备管理员（自动锁屏）", activity.adminActive)
                 OutlinedButton(onClick = { activity.requestCamera() }, Modifier.fillMaxWidth()) { Text("授权摄像头") }
