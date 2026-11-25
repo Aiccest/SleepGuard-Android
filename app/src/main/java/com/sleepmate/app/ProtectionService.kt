@@ -351,7 +351,9 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     if (eyesClosedSince == 0L) eyesClosedSince = now
                     val eyesClosedLongEnough = now - eyesClosedSince >= EYES_CLOSED_REQUIRED_MS
                     val phoneStillLongEnough = stillSince > 0L && now - stillSince >= PHONE_STILL_REQUIRED_MS
+                    val power = getSystemService(Context.POWER_SERVICE) as PowerManager
                     if (eyesClosedLongEnough && phoneStillLongEnough &&
+                        screenInteractive && power.isInteractive && mediaPlaying &&
                         triggered.compareAndSet(false, true)) {
                         scope.launch { performProtection() }
                     }
@@ -368,7 +370,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             triggered.set(false)
             return
         }
-        updateNotification("确认符合睡眠条件；正在暂停媒体并准备锁屏")
+        updateNotification("确认符合睡眠条件；正在锁定屏幕")
         detectionJob?.cancel()
         unregisterMotionSensor()
         withContext(Dispatchers.Main) { cameraProvider?.unbindAll() }
@@ -380,7 +382,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         if (dpm.isAdminActive(ComponentName(this, SleepGuardAdminReceiver::class.java))) {
             dpm.lockNow()
         } else {
-            updateNotification("已暂停媒体，但未激活设备管理员，无法自动锁屏")
+            updateNotification("未激活设备管理员，无法自动锁屏")
             triggered.set(false)
         }
     }
