@@ -74,7 +74,7 @@ class SleepGuardNotificationListener : NotificationListenerService() {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
                 else startService(intent)
             } catch (_: Exception) {
-                Log.w("SleepGuard", "Unable to start protection service")
+                Log.w("SleepMate", "Unable to start protection service")
             }
         } else {
             ProtectionService.stop(this)
