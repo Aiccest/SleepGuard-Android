@@ -147,12 +147,10 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         val selected = MediaAppPreferences.getSelectedPackages(this)
         if (selected.isEmpty()) { setTargetAppForeground(false); return }
         val now = System.currentTimeMillis()
-        if (lastForegroundPackage == null) {
-            lastForegroundPackage = usageStatsManager.queryUsageStats(
-                UsageStatsManager.INTERVAL_DAILY, now - 24 * 60 * 60_000L, now
-            ).maxByOrNull { it.lastTimeUsed }?.packageName
-        }
-        val events = usageStatsManager.queryEvents(now - 15000L, now)
+        // On first run, replay a longer event window to reconstruct the latest foreground
+        // package. UsageStats.lastTimeUsed is not proof that an app is currently foreground.
+        val eventWindowStart = if (lastForegroundPackage == null) now - 24 * 60 * 60_000L else now - 15000L
+        val events = usageStatsManager.queryEvents(eventWindowStart, now)
         val event = UsageEvents.Event()
         var foreground = lastForegroundPackage
         while (events.hasNextEvent()) {
@@ -196,7 +194,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         lastActivityAt = SystemClock.elapsedRealtime()
         stillSince = 0L
         registerMotionSensor()
-        updateNotification("屏幕已亮起且媒体仍在播放；重新开始低功耗等待")
+        updateNotification("屏幕已亮起且所选应用仍在前台；重新开始低功耗等待")
         scheduleDetection(NO_ACTIVITY_REQUIRED_MS)
     }
 
