@@ -51,74 +51,101 @@ class MainActivity : ComponentActivity() {
     fun openNotificationAccess() = startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
 }
 
-private const val PREFS = "sleepguard_settings"
-private const val KEY_MONITOR = "monitor_seconds"
-private const val KEY_INTERVAL = "interval_minutes"
-
 @Composable
 private fun SleepGuardScreen(activity: MainActivity) {
-    val prefs = remember { activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
-    var monitor by remember { mutableIntStateOf(prefs.getInt(KEY_MONITOR, 10).coerceIn(5, 15)) }
-    var interval by remember { mutableIntStateOf(prefs.getInt(KEY_INTERVAL, 5).coerceIn(1, 30)) }
     var running by remember { mutableStateOf(false) }
     MaterialTheme {
         Surface(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 Text("SleepGuard", style = MaterialTheme.typography.headlineLarge)
-                Text("智能防睡眠耗电管家 · 完整功能测试版")
+                Text("智能防睡眠 · 低功耗保护")
+
+                // 保护状态放在权限状态之前，打开应用先看到运行状态。
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("保护状态", style = MaterialTheme.typography.titleMedium)
+                        Text(if (running) "运行中：等待媒体播放与设备静止条件" else "已停止")
+                        Button(
+                            onClick = {
+                                activity.refreshPermissions()
+                                if (!activity.cameraGranted) activity.requestCamera()
+                                else if (!activity.listenerEnabled) activity.openNotificationAccess()
+                                else {
+                                    ProtectionService.start(activity)
+                                    running = true
+                                }
+                            },
+                            enabled = !running,
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("启动智能保护") }
+                        OutlinedButton(
+                            onClick = {
+                                ProtectionService.stop(activity)
+                                running = false
+                            },
+                            enabled = running,
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("停止保护") }
+                    }
+                }
+
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("权限状态", style = MaterialTheme.typography.titleMedium)
                         Text("摄像头：${if (activity.cameraGranted) "已授权" else "未授权"}")
-                        Text("媒体通知访问：${if (activity.listenerEnabled) "已授权" else "未授权（不能自动暂停媒体）"}")
-                        Text("设备管理员：${if (activity.adminActive) "已激活" else "未激活（不能自动锁屏）"}")
-                        OutlinedButton(onClick = { activity.requestCamera() }, Modifier.fillMaxWidth()) { Text("授权摄像头") }
-                        OutlinedButton(onClick = { activity.openNotificationAccess() }, Modifier.fillMaxWidth()) { Text("开启媒体通知访问") }
+                        Text("媒体通知访问：${if (activity.listenerEnabled) "已授权" else "未授权（无法判断媒体播放状态）"}")
+                        Text("设备管理员：${if (activity.adminActive) "已激活" else "未激活（无法自动锁屏）"}")
+                        OutlinedButton(onClick = { activity.requestCamera() }, Modifier.fillMaxWidth()) {
+                            Text("授权摄像头")
+                        }
+                        OutlinedButton(onClick = { activity.openNotificationAccess() }, Modifier.fillMaxWidth()) {
+                            Text("开启媒体通知访问")
+                        }
                         OutlinedButton(onClick = {
-                            val c = ComponentName(activity, SleepGuardAdminReceiver::class.java)
+                            val component = ComponentName(activity, SleepGuardAdminReceiver::class.java)
                             activity.startActivity(Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
-                                putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, c)
-                                putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "允许 SleepGuard 在检测到符合条件的睡眠状态后锁定屏幕。")
+                                putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, component)
+                                putExtra(
+                                    DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                                    "允许 SleepGuard 在确认符合睡眠条件后锁定屏幕。"
+                                )
                             })
-                        }, Modifier.fillMaxWidth()) { Text("激活自动锁屏权限") }
-                        OutlinedButton(onClick = { activity.refreshPermissions() }, Modifier.fillMaxWidth()) { Text("刷新权限状态") }
+                        }, Modifier.fillMaxWidth()) {
+                            Text("激活自动锁屏权限")
+                        }
+                        OutlinedButton(onClick = { activity.refreshPermissions() }, Modifier.fillMaxWidth()) {
+                            Text("刷新权限状态")
+                        }
                     }
                 }
+
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("监测设置", style = MaterialTheme.typography.titleMedium)
-                        Text("单次监测时长：$monitor 秒")
-                        Slider(value = monitor.toFloat(), onValueChange = {
-                            monitor = it.toInt().coerceIn(5, 15)
-                            prefs.edit().putInt(KEY_MONITOR, monitor).apply()
-                        }, valueRange = 5f..15f, steps = 9, enabled = !running)
-                        Text("两次监测间隔：$interval 分钟")
-                        Slider(value = interval.toFloat(), onValueChange = {
-                            interval = it.toInt().coerceIn(1, 30)
-                            prefs.edit().putInt(KEY_INTERVAL, interval).apply()
-                        }, valueRange = 1f..30f, steps = 28, enabled = !running)
-                        Text("运行时会按设定间隔启动前置摄像头进行短时检测。检测画面只在本机处理，不上传。")
+                        Text("低功耗监测策略", style = MaterialTheme.typography.titleMedium)
+                        Text("• 没有媒体播放时不启动摄像头。")
+                        Text("• 媒体播放期间，设备连续无明显活动5分钟后才进入检测准备。")
+                        Text("• 手机静止确认8秒后，摄像头才短暂启动，单次最长30秒。")
+                        Text("• 未发现持续闭眼时，复查间隔依次为15、20、25、最多30分钟。")
+                        Text("• 检测到设备活动或媒体停止时，取消本轮候选并重新计时。")
+                        Text("• 为兼顾省电，使用媒体会话和设备运动作为活动信号；Android普通应用无法可靠读取其他应用内的全部触摸事件。")
+                        Text("检测画面仅在本机处理，不上传。")
                     }
                 }
-                Text(if (running) "保护状态：运行中" else "保护状态：已停止", style = MaterialTheme.typography.titleMedium)
-                Button(onClick = {
-                    activity.refreshPermissions()
-                    if (!activity.cameraGranted) activity.requestCamera()
-                    else {
-                        ProtectionService.start(activity)
-                        running = true
-                    }
-                }, enabled = !running, modifier = Modifier.fillMaxWidth()) { Text("启动智能保护") }
-                OutlinedButton(onClick = {
-                    ProtectionService.stop(activity)
-                    running = false
-                }, enabled = running, modifier = Modifier.fillMaxWidth()) { Text("停止保护") }
-                OutlinedButton(onClick = {
-                    if (activity.adminActive) {
-                        (activity.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager).lockNow()
-                    }
-                }, modifier = Modifier.fillMaxWidth()) { Text("测试锁屏") }
-                Text("提示：小米系统请为 SleepGuard 开启自启动，并将电池省电策略设为无限制。锁屏后系统可能暂停摄像头；本应用会在下一轮重新尝试。")
+
+                OutlinedButton(
+                    onClick = {
+                        activity.refreshPermissions()
+                        if (activity.adminActive) {
+                            (activity.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager).lockNow()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("测试锁屏") }
+
+                Text("提示：小米系统建议为 SleepGuard 开启自启动，并将电池策略设为无限制。系统可能限制后台摄像头启动；应用会在允许时再尝试。")
             }
         }
     }
