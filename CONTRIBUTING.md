@@ -1,8 +1,8 @@
 # 贡献指南
 
-感谢你关注 SleepGuard。
+感谢你关注 SleepMate。
 
-SleepGuard 的目标是：当用户在播放媒体时睡着，尽可能低功耗地识别睡眠状态，并在条件允许时暂停媒体、锁定屏幕，避免整夜亮屏和持续播放造成不必要的耗电。
+SleepMate 的目标是：当用户在播放媒体时睡着，尽可能低功耗地识别睡眠状态，并在条件允许时暂停媒体、锁定屏幕，避免整夜亮屏和持续播放造成不必要的耗电。
 
 ## 贡献原则
 
@@ -14,7 +14,7 @@ SleepGuard 的目标是：当用户在播放媒体时睡着，尽可能低功耗
 
 ## 许可证与贡献
 
-- SleepGuard 项目采用 **GNU General Public License v3.0 only（GPL-3.0-only）**，完整条款见仓库根目录的 [LICENSE](LICENSE)。
+- SleepMate 项目采用 **GNU General Public License v3.0 only（GPL-3.0-only）**，完整条款见仓库根目录的 [LICENSE](LICENSE)。
 - 提交代码贡献的贡献者保留其贡献内容依法享有的著作权；在向本项目提交贡献时，贡献者同意该贡献作为本项目的一部分，按 GPL-3.0-only 的条款提供和分发。
 - 贡献者应确保自己有权提交相关代码、文档和资源；不得提交来源不明、未经授权或许可证不兼容的第三方材料。
 - 提交 Pull Request 不代表向项目转让著作权，也不代表签署了额外的版权转让协议或 Contributor License Agreement（CLA）。
@@ -25,7 +25,7 @@ SleepGuard 的目标是：当用户在播放媒体时睡着，尽可能低功耗
 请尽量提供：
 - 手机品牌和型号
 - Android 版本及系统版本
-- SleepGuard 版本或提交号
+- SleepMate 版本或提交号
 - 复现步骤
 - 预期结果与实际结果
 - 相关日志（先删除个人信息、令牌和其他敏感内容）
