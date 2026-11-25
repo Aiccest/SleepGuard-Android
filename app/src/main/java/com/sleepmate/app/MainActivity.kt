@@ -396,7 +396,6 @@ private fun MonitorAppsScreen(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            TextButton(onClick = { onSelectionChanged(emptySet()) }) { Text("全不选") }
             Spacer(Modifier.weight(1f))
             Text("已选 ${selectedPackages.size} 个", style = MaterialTheme.typography.labelLarge)
             TextButton(onClick = { activity.refreshPermissions() }) { Text("刷新") }
