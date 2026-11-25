@@ -426,7 +426,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(CHANNEL_ID, "SleepGuard 保护状态", NotificationManager.IMPORTANCE_LOW)
+            val channel = NotificationChannel(CHANNEL_ID, "SleepMate 保护状态", NotificationManager.IMPORTANCE_LOW)
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
@@ -434,7 +434,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private fun notification(message: String): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
-            .setContentTitle("SleepGuard")
+            .setContentTitle("SleepMate")
             .setContentText(message)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
