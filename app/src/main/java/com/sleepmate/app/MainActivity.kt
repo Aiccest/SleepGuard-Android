@@ -282,7 +282,7 @@ private fun HomeScreen(
                 PermissionLine("设备管理员（自动锁屏）", activity.adminActive)
                 if (!activity.adminActive) {
                     Text(
-                        "设备管理员是自动锁屏的必要授权。未激活时仍可启动监测，但确认入睡后只能暂停媒体，无法自动锁屏。",
+                        "设备管理员是自动锁屏的必要授权。未激活时仍可启动监测，但确认入睡后无法自动锁屏。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
                     )
@@ -298,7 +298,7 @@ private fun HomeScreen(
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("系统运行提示", style = MaterialTheme.typography.titleMedium)
                 Text("小米 / Redmi 等系统建议为 SleepMate 开启自启动，并将电池策略设为无限制。")
-                Text("应用列表只显示具有桌面启动入口的已安装应用；个别不提供标准媒体会话的应用，即使勾选也可能无法识别或暂停。", style = MaterialTheme.typography.bodySmall)
+                Text("应用列表只显示具有桌面启动入口的已安装应用；个别不提供标准媒体会话的应用，即使勾选也可能无法识别播放状态。", style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -468,7 +468,7 @@ private fun StrategyScreen(onBack: () -> Unit) {
             Text("2. 设备连续约 5 分钟没有明显活动后，进入检测准备。")
             Text("3. 手机保持静止约 8 秒后，在 Android 系统允许的情况下短暂启动摄像头。")
             Text("4. 单次摄像头检测最长约 30 秒；持续闭眼约 3 秒作为辅助判断条件。")
-            Text("5. 达到睡眠判定条件后，先停止摄像头与活动检测，再尝试暂停已选择应用的媒体会话；设备管理员已授权时自动锁定屏幕。")
+            Text("5. 达到睡眠判定条件后，停止摄像头与活动检测；设备管理员已授权时直接锁定屏幕。")
             Text("6. 屏幕熄灭后不再进行睡眠检测，也不运行摄像头；用户手动熄屏同样如此。重新亮屏后，仅当所选媒体应用仍在播放时才重新开始监测。")
             HorizontalDivider()
             Text("复查节奏", style = MaterialTheme.typography.titleMedium)
@@ -478,7 +478,7 @@ private fun StrategyScreen(onBack: () -> Unit) {
             Text("隐私与系统限制", style = MaterialTheme.typography.titleMedium)
             Text("摄像头只在满足检测条件时短暂调用，画面设计为在本机处理，不上传。")
             Text("Android 对后台摄像头访问有严格限制。屏幕关闭或应用处于后台时，系统可能不允许启动摄像头；实际行为受 Android 版本和厂商系统影响。")
-            Text("普通应用无法可靠读取其他应用内的全部触摸事件，设备运动只能作为活动代理信号。媒体识别和暂停能力取决于目标应用是否提供可访问的标准媒体会话。")
+            Text("普通应用无法可靠读取其他应用内的全部触摸事件，设备运动只能作为活动代理信号。媒体播放状态识别取决于目标应用是否提供可访问的标准媒体会话。")
             Text("以上为当前设计策略，不代表睡眠识别准确率、后台准点运行或省电效果已经通过真机验证。")
         }
     }
@@ -508,7 +508,7 @@ private fun AboutScreen(activity: MainActivity, onBack: () -> Unit) {
             Text("SleepMate", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text("用户睡着了，手机也该休息了。", style = MaterialTheme.typography.bodyMedium)
             HorizontalDivider()
-            AboutLine("项目用途", "在用户观看视频或收听媒体内容时，尝试识别入睡状态，并在符合条件后暂停媒体、锁定屏幕，减少不必要的播放和亮屏耗电。")
+            AboutLine("项目用途", "在用户观看视频或收听媒体内容时，尝试识别入睡状态，并在符合条件后直接锁定屏幕，减少不必要的亮屏耗电。")
             AboutLine("版本", versionName)
             AboutLine("项目状态", "开发原型，自动睡眠检测链路尚未完成全面构建与真机验证。")
             AboutLine("开源协议", "GNU General Public License v3.0 only（GPL-3.0-only）")
