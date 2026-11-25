@@ -1,0 +1,19 @@
+SPDX-License-Identifier: GPL-3.0-only
+
+SleepGuard is licensed under the GNU General Public License version 3 only
+(GPL-3.0-only).
+
+The complete license text is available at:
+https://www.gnu.org/licenses/gpl-3.0.txt
+
+You may use, modify, and redistribute this program under the terms of
+GNU GPL version 3. When conveying a covered work, you must comply with the
+license conditions, including the applicable requirements to provide the
+Corresponding Source. Modified versions of the covered work must be licensed
+as a whole under GPL-3.0-only when conveyed, subject to the terms and
+exceptions stated in the license.
+
+This project does not grant permission to use the SleepGuard name, logo, or
+other project branding to imply that an unofficial fork is an official
+release. Trademark and branding rights, if any, are separate from this
+software license.
