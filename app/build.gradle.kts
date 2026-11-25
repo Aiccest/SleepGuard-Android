@@ -5,10 +5,10 @@ plugins {
 }
 
 android {
-    namespace = "com.sleepguard.app"
+    namespace = "com.sleepmate.app"
     compileSdk = 35
     defaultConfig {
-        applicationId = "com.sleepguard.app"
+        applicationId = "com.sleepmate.app"
         minSdk = 28
         targetSdk = 33
         versionCode = 4
