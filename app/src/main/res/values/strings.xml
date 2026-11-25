@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">SleepGuard</string>
+    <string name="admin_description">允许 SleepGuard 在检测到用户可能睡着时锁定屏幕。</string>
+</resources>
