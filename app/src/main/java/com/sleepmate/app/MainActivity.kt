@@ -42,14 +42,14 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-data class InstalledMediaApp(
+data class InstalledMonitorApp(
     val packageName: String,
     val label: String,
     val icon: Bitmap
 )
 
 private enum class Screen {
-    HOME, SETTINGS, MEDIA_APPS, STRATEGY, ABOUT
+    HOME, SETTINGS, MONITOR_APPS, STRATEGY, ABOUT
 }
 
 class MainActivity : ComponentActivity() {
@@ -57,7 +57,7 @@ class MainActivity : ComponentActivity() {
     var adminActive by mutableStateOf(false)
     var usageAccessGranted by mutableStateOf(false)
     var notificationsGranted by mutableStateOf(true)
-    var installedMediaApps by mutableStateOf<List<InstalledMediaApp>>(emptyList())
+    var installedMediaApps by mutableStateOf<List<InstalledMonitorApp>>(emptyList())
     var appsLoading by mutableStateOf(false)
     private var appLoadJob: Job? = null
 
@@ -108,7 +108,7 @@ class MainActivity : ComponentActivity() {
                             val canvas = Canvas(bitmap)
                             drawable.setBounds(0, 0, width, width)
                             drawable.draw(canvas)
-                            InstalledMediaApp(
+                            InstalledMonitorApp(
                                 packageName = appPackage,
                                 label = info.loadLabel(packageManager)?.toString()?.ifBlank { appPackage } ?: appPackage,
                                 icon = bitmap
@@ -195,7 +195,7 @@ private fun SleepGuardApp(activity: MainActivity) {
                 )
                 Screen.SETTINGS -> SettingsScreen(
                     onBack = { screen = Screen.HOME.name },
-                    onMediaApps = { screen = Screen.MEDIA_APPS.name },
+                    onMonitorApps = { screen = Screen.MONITOR_APPS.name },
                     onStrategy = { screen = Screen.STRATEGY.name },
                     onAbout = { screen = Screen.ABOUT.name },
                     onTestLock = {
@@ -205,7 +205,7 @@ private fun SleepGuardApp(activity: MainActivity) {
                         } else activity.openAdminActivation()
                     }
                 )
-                Screen.MEDIA_APPS -> MediaAppsScreen(
+                Screen.MEDIA_APPS -> MonitorAppsScreen(
                     activity = activity,
                     selectedPackages = selectedPackages,
                     onBack = { screen = Screen.SETTINGS.name },
@@ -285,7 +285,7 @@ private fun HomeScreen(
                 PermissionLine("设备管理员（自动锁屏）", activity.adminActive)
                 if (!activity.adminActive) {
                     Text(
-                        "设备管理员是自动锁屏的必要授权。未激活时仍可启动监测，但确认入睡后无法自动锁屏。",
+                        "设备管理员用于确认入睡后直接锁屏。未激活时仍可启动监测，但会尝试返回桌面，效果受系统限制。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
                     )
@@ -301,7 +301,7 @@ private fun HomeScreen(
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("系统运行提示", style = MaterialTheme.typography.titleMedium)
                 Text("小米 / Redmi 等系统建议为 SleepMate 开启自启动，并将电池策略设为无限制。")
-                Text("应用列表只显示具有桌面启动入口的已安装应用；个别不提供标准媒体会话的应用，即使勾选也可能无法识别播放状态。", style = MaterialTheme.typography.bodySmall)
+                Text("应用列表只显示具有桌面启动入口的已安装应用；前台识别依赖 Android 使用情况访问权限；部分系统可能延迟更新应用切换状态。", style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -363,7 +363,7 @@ private fun MediaAppsScreen(
     var query by rememberSaveable { mutableStateOf("") }
     val allApps = activity.installedMediaApps
     val sortedApps = remember(allApps, selectedPackages) {
-        allApps.sortedWith(compareByDescending<InstalledMediaApp> { it.packageName in selectedPackages }
+        allApps.sortedWith(compareByDescending<InstalledMonitorApp> { it.packageName in selectedPackages }
             .thenBy { it.label.lowercase() })
     }
     val filteredApps = remember(sortedApps, query) {
