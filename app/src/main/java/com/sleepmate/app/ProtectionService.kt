@@ -53,6 +53,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private var lastActivityAt = 0L
     private var stillSince = 0L
     private var eyesClosedSince = 0L
+    @Volatile private var faceDetectedInWindow = false
+    @Volatile private var validFrameAnalyzedInWindow = false
     private var consecutiveOpenEyeChecks = 0
     private val triggered = AtomicBoolean(false)
     @Volatile private var screenInteractive = true
@@ -264,7 +266,15 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             eyesClosedSince = 0L
             updateNotification("正在进行短时睡眠确认")
             try {
-                runCameraWindow()
+                val result = runCameraWindow()
+                if (!result.second) {
+                    updateNotification("摄像头未取得有效画面；本轮不作睡眠判断")
+                } else if (!result.first && screenInteractive && targetAppForeground &&
+                    !triggered.get() && stillSince > 0L &&
+                    SystemClock.elapsedRealtime() - stillSince >= PHONE_STILL_REQUIRED_MS) {
+                    updateNotification("连续30秒未检测到人脸；判定睡眠并执行保护")
+                    if (triggered.compareAndSet(false, true)) performProtection()
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -284,7 +294,9 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         }
     }
 
-    private suspend fun runCameraWindow() {
+    private suspend fun runCameraWindow(): Pair<Boolean, Boolean> {
+        faceDetectedInWindow = false
+        validFrameAnalyzedInWindow = false
         val future = ProcessCameraProvider.getInstance(this)
         val provider = suspendCancellableCoroutine<ProcessCameraProvider> { cont ->
             future.addListener({
@@ -307,6 +319,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             analysis.clearAnalyzer()
             withContext(Dispatchers.Main) { provider.unbindAll() }
         }
+        return Pair(faceDetectedInWindow, validFrameAnalyzedInWindow)
     }
 
     private fun analyzeFrame(proxy: ImageProxy) {
@@ -319,6 +332,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         detector.process(image)
             .addOnSuccessListener(cameraExecutor) { faces ->
                 if (!screenInteractive || !targetAppForeground || triggered.get()) return@addOnSuccessListener
+                validFrameAnalyzedInWindow = true
+                if (faces.isNotEmpty()) faceDetectedInWindow = true
                 val face = faces.firstOrNull()
                 val left = face?.leftEyeOpenProbability
                 val right = face?.rightEyeOpenProbability
