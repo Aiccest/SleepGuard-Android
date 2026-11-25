@@ -4,13 +4,10 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.app.admin.DevicePolicyManager
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
-import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,9 +17,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * V1 基础保护服务。
- * 当前只验证前台服务、周期调度和管理员锁屏链路。
- * 摄像头/传感器判断尚未接入，严禁将本版本当作已具备自动睡眠识别能力。
+ * 当前是功能测试版：验证前台服务周期调度和管理员锁屏链路。
+ * 摄像头睡眠识别、传感器判断及媒体自动暂停尚未接入。
  */
 class ProtectionService : Service() {
     private val scope = CoroutineScope(Dispatchers.Default)
@@ -34,22 +30,20 @@ class ProtectionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP -> {
-                stopSelf()
-                return START_NOT_STICKY
-            }
+        if (intent?.action == ACTION_STOP) {
+            stopSelf()
+            return START_NOT_STICKY
         }
 
-        startForeground(NOTIFICATION_ID, buildNotification("保护服务运行中：基础测试模式"))
+        startForeground(NOTIFICATION_ID, buildNotification("保护服务运行中：功能测试模式"))
         if (loopJob?.isActive != true) {
             loopJob = scope.launch {
-                // V1 仅做调度占位，不会自动锁屏，避免尚未接入检测时误锁用户手机。
                 while (isActive) {
-                    val startedAt = SystemClock.elapsedRealtime()
-                    delay(INTERVAL_MS)
-                    val elapsed = SystemClock.elapsedRealtime() - startedAt
-                    updateNotification("基础测试模式：已运行约 ${elapsed / 60000} 分钟")
+                    val minutes = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                        .getInt(KEY_INTERVAL_MINUTES, DEFAULT_INTERVAL_MINUTES)
+                        .coerceIn(1, 30)
+                    updateNotification("测试模式：下次检测计划间隔 $minutes 分钟")
+                    delay(minutes * 60_000L)
                 }
             }
         }
@@ -89,9 +83,11 @@ class ProtectionService : Service() {
     companion object {
         const val ACTION_START = "com.sleepguard.app.START"
         const val ACTION_STOP = "com.sleepguard.app.STOP"
+        private const val PREFS_NAME = "sleepguard_settings"
+        private const val KEY_INTERVAL_MINUTES = "interval_minutes"
+        private const val DEFAULT_INTERVAL_MINUTES = 5
         private const val CHANNEL_ID = "sleepguard_protection"
         private const val NOTIFICATION_ID = 1001
-        private const val INTERVAL_MS = 20L * 60L * 1000L
 
         fun start(context: Context) {
             val intent = Intent(context, ProtectionService::class.java).setAction(ACTION_START)
