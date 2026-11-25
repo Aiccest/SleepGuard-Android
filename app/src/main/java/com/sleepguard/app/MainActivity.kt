@@ -196,7 +196,7 @@ private fun HomeScreen(
             Image(
                 painter = painterResource(R.drawable.ic_sleepguard_foreground),
                 contentDescription = "SleepGuard 正式图标",
-                modifier = Modifier.size(56.dp).padding(4.dp),
+                modifier = Modifier.size(44.dp).padding(2.dp),
                 contentScale = ContentScale.Fit
             )
             Spacer(Modifier.width(12.dp))
@@ -424,7 +424,7 @@ private fun AboutScreen(activity: MainActivity, onBack: () -> Unit) {
             Image(
                 painter = painterResource(R.drawable.ic_sleepguard_foreground),
                 contentDescription = "SleepGuard 正式图标",
-                modifier = Modifier.size(72.dp).padding(5.dp),
+                modifier = Modifier.size(60.dp).padding(4.dp),
                 contentScale = ContentScale.Fit
             )
             Text("SleepGuard", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
