@@ -76,6 +76,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     screenInteractive = false
+                    triggered.set(false)
                     detectionJob?.cancel()
                     detectionJob = null
                     cameraJob?.cancel()
@@ -180,9 +181,10 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     private fun setMediaPlaying(playing: Boolean) {
-        if (mediaPlaying == playing) return
+        val changed = mediaPlaying != playing
         mediaPlaying = playing
         if (playing) {
+            if (!changed) return
             lastActivityAt = SystemClock.elapsedRealtime()
             stillSince = 0L
             if (screenInteractive && !triggered.get()) {
@@ -205,6 +207,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 if (hasSelection) "所选应用当前没有媒体播放；摄像头保持关闭"
                 else "尚未选择媒体应用；摄像头保持关闭"
             )
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
         }
     }
 
@@ -337,6 +341,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         val image = InputImage.fromMediaImage(mediaImage, proxy.imageInfo.rotationDegrees)
         detector.process(image)
             .addOnSuccessListener(cameraExecutor) { faces ->
+                if (!screenInteractive || !mediaPlaying || triggered.get()) return@addOnSuccessListener
                 val face = faces.firstOrNull()
                 val left = face?.leftEyeOpenProbability
                 val right = face?.rightEyeOpenProbability
@@ -358,12 +363,25 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     private suspend fun performProtection() {
+        val power = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (!screenInteractive || !power.isInteractive || !mediaPlaying) {
+            triggered.set(false)
+            return
+        }
         updateNotification("确认符合睡眠条件；正在暂停媒体并准备锁屏")
         detectionJob?.cancel()
         unregisterMotionSensor()
         withContext(Dispatchers.Main) { cameraProvider?.unbindAll() }
+        if (!screenInteractive || !power.isInteractive || !mediaPlaying) {
+            triggered.set(false)
+            return
+        }
         pauseActiveMediaSessions()
         delay(500)
+        if (!screenInteractive || !power.isInteractive || !mediaPlaying) {
+            triggered.set(false)
+            return
+        }
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         if (dpm.isAdminActive(ComponentName(this, SleepGuardAdminReceiver::class.java))) {
             dpm.lockNow()
