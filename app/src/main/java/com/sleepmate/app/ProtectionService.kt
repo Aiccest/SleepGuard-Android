@@ -435,9 +435,9 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     companion object {
         val running = MutableStateFlow(false)
 
-        const val ACTION_START = "com.sleepguard.app.START"
-        const val ACTION_STOP = "com.sleepguard.app.STOP"
-        const val ACTION_SELECTION_CHANGED = "com.sleepguard.app.SELECTION_CHANGED"
+        const val ACTION_START = "com.sleepmate.app.START"
+        const val ACTION_STOP = "com.sleepmate.app.STOP"
+        const val ACTION_SELECTION_CHANGED = "com.sleepmate.app.SELECTION_CHANGED"
         private const val EYES_CLOSED_REQUIRED_MS = 3000L
         private const val PHONE_STILL_REQUIRED_MS = 8000L
         private const val NO_ACTIVITY_REQUIRED_MS = 5 * 60_000L
