@@ -147,6 +147,11 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         val selected = MediaAppPreferences.getSelectedPackages(this)
         if (selected.isEmpty()) { setTargetAppForeground(false); return }
         val now = System.currentTimeMillis()
+        if (lastForegroundPackage == null) {
+            lastForegroundPackage = usageStatsManager.queryUsageStats(
+                UsageStatsManager.INTERVAL_DAILY, now - 24 * 60 * 60_000L, now
+            ).maxByOrNull { it.lastTimeUsed }?.packageName
+        }
         val events = usageStatsManager.queryEvents(now - 15000L, now)
         val event = UsageEvents.Event()
         var foreground = lastForegroundPackage
