@@ -32,6 +32,7 @@ import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetector
 import com.google.mlkit.vision.face.FaceDetectorOptions
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -123,6 +124,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             stopSelf()
             return START_NOT_STICKY
         }
+        running.value = true
         startForeground(NOTIFICATION_ID, notification("低功耗保护已启动"))
         if (intent?.action == ACTION_SELECTION_CHANGED) {
             refreshPlaybackState()
@@ -387,6 +389,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
     override fun onDestroy() {
+        running.value = false
         detectionJob?.cancel()
         cameraJob?.cancel()
         scope.cancel()
@@ -429,6 +432,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     companion object {
+        val running = MutableStateFlow(false)
+
         const val ACTION_START = "com.sleepguard.app.START"
         const val ACTION_STOP = "com.sleepguard.app.STOP"
         const val ACTION_SELECTION_CHANGED = "com.sleepguard.app.SELECTION_CHANGED"
