@@ -132,7 +132,7 @@ class MainActivity : ComponentActivity() {
         val component = ComponentName(this, SleepGuardAdminReceiver::class.java)
         startActivity(Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
             putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, component)
-            putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "允许 SleepGuard 在确认符合睡眠条件后锁定屏幕。")
+            putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "允许 SleepMate 在确认符合睡眠条件后锁定屏幕。")
         })
     }
 }
@@ -243,13 +243,13 @@ private fun HomeScreen(
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Image(
                 painter = painterResource(R.drawable.ic_sleepguard_foreground),
-                contentDescription = "SleepGuard 正式图标",
+                contentDescription = "SleepMate 正式图标",
                 modifier = Modifier.size(44.dp).padding(2.dp),
                 contentScale = ContentScale.Fit
             )
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text("SleepGuard", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text("SleepMate", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                 Text("用户睡着了，手机也该休息了。", style = MaterialTheme.typography.bodySmall)
             }
             TextButton(onClick = onSettings) { Text("设置") }
@@ -297,7 +297,7 @@ private fun HomeScreen(
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("系统运行提示", style = MaterialTheme.typography.titleMedium)
-                Text("小米 / Redmi 等系统建议为 SleepGuard 开启自启动，并将电池策略设为无限制。")
+                Text("小米 / Redmi 等系统建议为 SleepMate 开启自启动，并将电池策略设为无限制。")
                 Text("应用列表只显示具有桌面启动入口的已安装应用；个别不提供标准媒体会话的应用，即使勾选也可能无法识别或暂停。", style = MaterialTheme.typography.bodySmall)
             }
         }
@@ -328,7 +328,7 @@ private fun SettingsScreen(
         ) {
             SettingsEntry("媒体应用管理", "选择需要纳入睡眠保护的应用", onMediaApps)
             SettingsEntry("低功耗监测策略", "查看检测流程、触发条件和时间安排", onStrategy)
-            SettingsEntry("关于 SleepGuard", "项目介绍、版本信息、开源协议", onAbout)
+            SettingsEntry("关于 SleepMate", "项目介绍、版本信息、开源协议", onAbout)
             Spacer(Modifier.height(8.dp))
             Text("辅助功能", style = MaterialTheme.typography.titleMedium)
             OutlinedButton(onClick = onTestLock, modifier = Modifier.fillMaxWidth()) { Text("测试锁屏") }
@@ -464,7 +464,7 @@ private fun StrategyScreen(onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text("工作流程", style = MaterialTheme.typography.titleMedium)
-            Text("1. 仅当你勾选的应用正在播放媒体时，SleepGuard 才进入睡眠检测准备状态。")
+            Text("1. 仅当你勾选的应用正在播放媒体时，SleepMate 才进入睡眠检测准备状态。")
             Text("2. 设备连续约 5 分钟没有明显活动后，进入检测准备。")
             Text("3. 手机保持静止约 8 秒后，在 Android 系统允许的情况下短暂启动摄像头。")
             Text("4. 单次摄像头检测最长约 30 秒；持续闭眼约 3 秒作为辅助判断条件。")
@@ -493,7 +493,7 @@ private fun AboutScreen(activity: MainActivity, onBack: () -> Unit) {
         } catch (_: Exception) { "未知" }
     }
     Column(Modifier.fillMaxSize()) {
-        PageHeader("关于 SleepGuard", onBack)
+        PageHeader("关于 SleepMate", onBack)
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -501,11 +501,11 @@ private fun AboutScreen(activity: MainActivity, onBack: () -> Unit) {
         ) {
             Image(
                 painter = painterResource(R.drawable.ic_sleepguard_foreground),
-                contentDescription = "SleepGuard 正式图标",
+                contentDescription = "SleepMate 正式图标",
                 modifier = Modifier.size(60.dp).padding(4.dp),
                 contentScale = ContentScale.Fit
             )
-            Text("SleepGuard", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text("SleepMate", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text("用户睡着了，手机也该休息了。", style = MaterialTheme.typography.bodyMedium)
             HorizontalDivider()
             AboutLine("项目用途", "在用户观看视频或收听媒体内容时，尝试识别入睡状态，并在符合条件后暂停媒体、锁定屏幕，减少不必要的播放和亮屏耗电。")
@@ -514,7 +514,7 @@ private fun AboutScreen(activity: MainActivity, onBack: () -> Unit) {
             AboutLine("开源协议", "GNU General Public License v3.0 only（GPL-3.0-only）")
             AboutLine("隐私原则", "以本机处理为设计目标，不上传摄像头画面或人脸数据。")
             TextButton(onClick = {
-                activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/Aiccest/SleepGuard-Android")))
+                activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/Aiccest/SleepMate-Android")))
             }) { Text("访问 GitHub 项目主页") }
         }
     }
