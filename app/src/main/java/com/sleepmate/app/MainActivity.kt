@@ -1,5 +1,6 @@
 package com.sleepmate.app
 
+import android.app.AppOpsManager
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
@@ -54,7 +55,7 @@ private enum class Screen {
 class MainActivity : ComponentActivity() {
     var cameraGranted by mutableStateOf(false)
     var adminActive by mutableStateOf(false)
-    var listenerEnabled by mutableStateOf(false)
+    var usageAccessGranted by mutableStateOf(false)
     var notificationsGranted by mutableStateOf(true)
     var installedMediaApps by mutableStateOf<List<InstalledMediaApp>>(emptyList())
     var appsLoading by mutableStateOf(false)
@@ -81,8 +82,10 @@ class MainActivity : ComponentActivity() {
         notificationsGranted = Build.VERSION.SDK_INT < 33 || checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         adminActive = dpm.isAdminActive(ComponentName(this, SleepGuardAdminReceiver::class.java))
-        listenerEnabled = Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
-            ?.contains(packageName) == true
+        val ops = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+        usageAccessGranted = try {
+            ops.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), packageName) == AppOpsManager.MODE_ALLOWED
+        } catch (_: Exception) { false }
         loadLaunchableApps()
     }
 
@@ -126,7 +129,7 @@ class MainActivity : ComponentActivity() {
             notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
     }
-    fun openNotificationAccess() = startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+    fun openUsageAccess() = startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
 
     fun openAdminActivation() {
         val component = ComponentName(this, SleepGuardAdminReceiver::class.java)
@@ -169,11 +172,11 @@ private fun SleepGuardApp(activity: MainActivity) {
                         if (selectedPackages.isEmpty()) {
                             android.widget.Toast.makeText(
                                 activity,
-                                "请先在设置中选择至少一个需要保护的媒体应用。",
+                                "请先选择需要监测的应用。",
                                 android.widget.Toast.LENGTH_LONG
                             ).show()
                         } else if (!activity.cameraGranted) activity.requestCamera()
-                        else if (!activity.listenerEnabled) activity.openNotificationAccess()
+                        else if (!activity.usageAccessGranted) activity.openUsageAccess()
                         else {
                             activity.requestNotificationsIfNeeded()
                             if (!activity.adminActive) {
@@ -259,7 +262,7 @@ private fun HomeScreen(
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("保护状态", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    if (running) "运行中：仅保护已选择的媒体应用"
+                    if (running) "运行中：仅监测已选择的应用"
                     else "已停止",
                     style = MaterialTheme.typography.bodyLarge
                 )
@@ -278,7 +281,7 @@ private fun HomeScreen(
                 Text("权限状态", style = MaterialTheme.typography.titleMedium)
                 PermissionLine("摄像头", activity.cameraGranted)
                 PermissionLine("运行通知（Android 13+）", activity.notificationsGranted)
-                PermissionLine("媒体通知访问", activity.listenerEnabled)
+                PermissionLine("使用情况访问", activity.usageAccessGranted)
                 PermissionLine("设备管理员（自动锁屏）", activity.adminActive)
                 if (!activity.adminActive) {
                     Text(
@@ -288,7 +291,7 @@ private fun HomeScreen(
                     )
                 }
                 OutlinedButton(onClick = { activity.requestCamera() }, Modifier.fillMaxWidth()) { Text("授权摄像头") }
-                OutlinedButton(onClick = { activity.openNotificationAccess() }, Modifier.fillMaxWidth()) { Text("开启媒体通知访问") }
+                OutlinedButton(onClick = { activity.openUsageAccess() }, Modifier.fillMaxWidth()) { Text("开启使用情况访问") }
                 OutlinedButton(onClick = { activity.openAdminActivation() }, Modifier.fillMaxWidth()) { Text("激活自动锁屏权限") }
                 TextButton(onClick = { activity.refreshPermissions() }, modifier = Modifier.align(Alignment.End)) { Text("刷新权限状态") }
             }
@@ -326,7 +329,7 @@ private fun SettingsScreen(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            SettingsEntry("媒体应用管理", "选择需要纳入睡眠保护的应用", onMediaApps)
+            SettingsEntry("监测应用管理", "选择需要纳入睡眠保护的应用", onMediaApps)
             SettingsEntry("低功耗监测策略", "查看检测流程、触发条件和时间安排", onStrategy)
             SettingsEntry("关于 SleepMate", "项目介绍、版本信息、开源协议", onAbout)
             Spacer(Modifier.height(8.dp))
@@ -372,7 +375,7 @@ private fun MediaAppsScreen(
     }
 
     Column(Modifier.fillMaxSize()) {
-        PageHeader("媒体应用管理", onBack)
+        PageHeader("监测应用管理", onBack)
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
@@ -391,7 +394,7 @@ private fun MediaAppsScreen(
                 TextButton(onClick = {
                     onSelectionChanged(allApps.map { it.packageName }.toSet())
                 }) { Text("全选") }
-                Text("仅选择有桌面启动入口的应用；不代表每个应用都支持媒体播放识别。",
+                Text("选择后，该应用处于前台时启动睡眠监测；应用内页面、视频、直播和全屏均纳入。",
                     modifier = Modifier.padding(start = 8.dp),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -446,7 +449,7 @@ private fun MediaAppsScreen(
         }
         if (selectedPackages.isEmpty()) {
             Text(
-                "当前没有选择任何应用，不会启动媒体睡眠检测。",
+                "当前没有选择任何应用，不会启动睡眠监测。",
                 modifier = Modifier.fillMaxWidth().padding(12.dp),
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall
@@ -464,21 +467,21 @@ private fun StrategyScreen(onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text("工作流程", style = MaterialTheme.typography.titleMedium)
-            Text("1. 仅当你勾选的应用正在播放媒体时，SleepMate 才进入睡眠检测准备状态。")
+            Text("1. 仅当你勾选的应用处于前台时，SleepMate 才进入睡眠检测准备状态。")
             Text("2. 设备连续约 5 分钟没有明显活动后，进入检测准备。")
             Text("3. 手机保持静止约 8 秒后，在 Android 系统允许的情况下短暂启动摄像头。")
             Text("4. 单次摄像头检测最长约 30 秒；持续闭眼约 3 秒作为辅助判断条件。")
             Text("5. 达到睡眠判定条件后，停止摄像头与活动检测；设备管理员已授权时直接锁定屏幕。")
-            Text("6. 屏幕熄灭后不再进行睡眠检测，也不运行摄像头；用户手动熄屏同样如此。重新亮屏后，仅当所选媒体应用仍在播放时才重新开始监测。")
+            Text("6. 屏幕熄灭后不再进行睡眠检测，也不运行摄像头；用户手动熄屏同样如此。重新亮屏后，仅当所选应用仍在前台时才重新开始监测。")
             HorizontalDivider()
             Text("复查节奏", style = MaterialTheme.typography.titleMedium)
             Text("未发现持续闭眼时，计划按 15、20、25 分钟递增复查，之后最多每 30 分钟复查。")
-            Text("用户活动、设备明显移动或媒体停止时，应取消当前睡眠候选并重新计时。")
+            Text("用户离开所选应用、用户活动或设备明显移动时，应取消当前睡眠候选并重新计时。")
             HorizontalDivider()
             Text("隐私与系统限制", style = MaterialTheme.typography.titleMedium)
             Text("摄像头只在满足检测条件时短暂调用，画面设计为在本机处理，不上传。")
             Text("Android 对后台摄像头访问有严格限制。屏幕关闭或应用处于后台时，系统可能不允许启动摄像头；实际行为受 Android 版本和厂商系统影响。")
-            Text("普通应用无法可靠读取其他应用内的全部触摸事件，设备运动只能作为活动代理信号。媒体播放状态识别取决于目标应用是否提供可访问的标准媒体会话。")
+            Text("普通应用无法可靠读取其他应用内的全部触摸事件，设备运动只能作为活动代理信号。前台应用识别依赖 Android 使用情况访问权限；系统多窗口和厂商后台策略可能影响识别。")
             Text("以上为当前设计策略，不代表睡眠识别准确率、后台准点运行或省电效果已经通过真机验证。")
         }
     }
@@ -508,7 +511,7 @@ private fun AboutScreen(activity: MainActivity, onBack: () -> Unit) {
             Text("SleepMate", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text("用户睡着了，手机也该休息了。", style = MaterialTheme.typography.bodyMedium)
             HorizontalDivider()
-            AboutLine("项目用途", "在用户观看视频或收听媒体内容时，尝试识别入睡状态，并在符合条件后直接锁定屏幕，减少不必要的亮屏耗电。")
+            AboutLine("项目用途", "在用户使用指定应用时，尝试识别入睡状态，并在符合条件后直接锁定屏幕，减少不必要的亮屏耗电。")
             AboutLine("版本", versionName)
             AboutLine("项目状态", "开发原型，自动睡眠检测链路尚未完成全面构建与真机验证。")
             AboutLine("开源协议", "GNU General Public License v3.0 only（GPL-3.0-only）")
