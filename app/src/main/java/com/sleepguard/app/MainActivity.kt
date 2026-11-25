@@ -136,10 +136,23 @@ private fun SleepGuardApp(activity: MainActivity) {
                     onSettings = { screen = Screen.SETTINGS.name },
                     onStart = {
                         activity.refreshPermissions()
-                        if (!activity.cameraGranted) activity.requestCamera()
+                        if (selectedPackages.isEmpty()) {
+                            android.widget.Toast.makeText(
+                                activity,
+                                "请先在设置中选择至少一个需要保护的媒体应用。",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        } else if (!activity.cameraGranted) activity.requestCamera()
                         else if (!activity.listenerEnabled) activity.openNotificationAccess()
                         else {
                             activity.requestNotificationsIfNeeded()
+                            if (!activity.adminActive) {
+                                android.widget.Toast.makeText(
+                                    activity,
+                                    "监测可以启动，但未激活设备管理员，确认入睡后无法自动锁屏。建议先激活自动锁屏权限。",
+                                    android.widget.Toast.LENGTH_LONG
+                                ).show()
+                            }
                             ProtectionService.start(activity)
                             running = true
                         }
@@ -239,6 +252,13 @@ private fun HomeScreen(
                 PermissionLine("运行通知（Android 13+）", activity.notificationsGranted)
                 PermissionLine("媒体通知访问", activity.listenerEnabled)
                 PermissionLine("设备管理员（自动锁屏）", activity.adminActive)
+                if (!activity.adminActive) {
+                    Text(
+                        "设备管理员是自动锁屏的必要授权。未激活时仍可启动监测，但确认入睡后只能暂停媒体，无法自动锁屏。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
                 OutlinedButton(onClick = { activity.requestCamera() }, Modifier.fillMaxWidth()) { Text("授权摄像头") }
                 OutlinedButton(onClick = { activity.openNotificationAccess() }, Modifier.fillMaxWidth()) { Text("开启媒体通知访问") }
                 OutlinedButton(onClick = { activity.openAdminActivation() }, Modifier.fillMaxWidth()) { Text("激活自动锁屏权限") }
