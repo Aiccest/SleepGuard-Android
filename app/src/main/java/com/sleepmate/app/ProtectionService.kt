@@ -13,14 +13,14 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.media.session.MediaController
-import android.media.session.MediaSessionManager
-import android.media.session.PlaybackState
 import android.os.Build
 import android.os.IBinder
+import android.app.AppOpsManager
+import android.app.usage.UsageEvents
+import android.app.usage.UsageStatsManager
+import android.os.Process
 import android.os.PowerManager
 import android.os.SystemClock
-import android.provider.Settings
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -44,9 +44,11 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private lateinit var detector: FaceDetector
     private lateinit var sensorManager: SensorManager
-    private lateinit var mediaSessionManager: MediaSessionManager
+    private lateinit var usageStatsManager: UsageStatsManager
 
-    private var mediaPlaying = false
+    private var targetAppForeground = false
+    private var lastForegroundPackage: String? = null
+    private var foregroundMonitorJob: Job? = null
     private var sensorRegistered = false
     private var lastActivityAt = 0L
     private var stillSince = 0L
@@ -58,19 +60,6 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private var detectionJob: Job? = null
     private var cameraJob: Job? = null
     private var cameraProvider: ProcessCameraProvider? = null
-    private val controllerCallbacks = mutableMapOf<MediaController, MediaController.Callback>()
-
-    private val activeSessionsListener =
-        MediaSessionManager.OnActiveSessionsChangedListener { controllers ->
-            updateControllers(controllers.orEmpty())
-        }
-
-    private val playbackCallback = object : MediaController.Callback() {
-        override fun onPlaybackStateChanged(state: PlaybackState?) {
-            refreshPlaybackState()
-        }
-    }
-
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -89,7 +78,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     screenInteractive = true
-                    refreshPlaybackState()
+                    refreshForegroundState()
                     resumeMonitoringIfEligible()
                 }
             }
@@ -106,7 +95,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             .build()
         detector = FaceDetection.getClient(options)
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+        usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         screenInteractive = (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
@@ -128,70 +117,62 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         running.value = true
         startForeground(NOTIFICATION_ID, notification("低功耗保护已启动"))
         if (intent?.action == ACTION_SELECTION_CHANGED) {
-            refreshPlaybackState()
+            refreshForegroundState()
             return START_STICKY
         }
-        if (hasMediaAccess()) {
-            try {
-                mediaSessionManager.addOnActiveSessionsChangedListener(
-                    activeSessionsListener,
-                    ComponentName(this, SleepGuardNotificationListener::class.java)
-                )
-                updateControllers(mediaSessionManager.getActiveSessions(
-                    ComponentName(this, SleepGuardNotificationListener::class.java)
-                ))
-            } catch (_: SecurityException) {
-                updateNotification("请开启媒体通知访问权限")
-            }
-        } else {
-            updateNotification("请开启媒体通知访问权限，才能识别媒体播放状态")
+        if (!hasUsageAccess()) {
+            updateNotification("请开启使用情况访问权限")
+            return START_STICKY
         }
+        startForegroundMonitor()
+        refreshForegroundState()
         return START_STICKY
     }
 
-    private fun hasMediaAccess(): Boolean =
-        Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
-            ?.contains(packageName) == true
-
-    private fun updateControllers(controllers: List<MediaController>) {
-        controllerCallbacks.forEach { (controller, callback) ->
-            try { controller.unregisterCallback(callback) } catch (_: Exception) { }
-        }
-        controllerCallbacks.clear()
-        controllers.forEach { controller ->
-            controller.registerCallback(playbackCallback)
-            controllerCallbacks[controller] = playbackCallback
-        }
-        refreshPlaybackState()
+    private fun hasUsageAccess(): Boolean {
+        val ops = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+        return try { ops.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName) == AppOpsManager.MODE_ALLOWED }
+        catch (_: Exception) { false }
     }
 
-    private fun refreshPlaybackState() {
-        val selectedPackages = MediaAppPreferences.getSelectedPackages(this)
-        if (selectedPackages.isEmpty()) {
-            setMediaPlaying(false)
-            updateNotification("尚未选择媒体应用；摄像头保持关闭")
-            return
+    private fun startForegroundMonitor() {
+        if (foregroundMonitorJob?.isActive == true) return
+        foregroundMonitorJob = scope.launch {
+            while (isActive) { refreshForegroundState(); delay(1000L) }
         }
-        val playing = controllerCallbacks.keys.any { controller ->
-            val state = controller.playbackState?.state
-            controller.packageName in selectedPackages &&
-                (state == PlaybackState.STATE_PLAYING || state == PlaybackState.STATE_BUFFERING)
-        }
-        setMediaPlaying(playing)
     }
 
-    private fun setMediaPlaying(playing: Boolean) {
-        if (mediaPlaying == playing) return
-        mediaPlaying = playing
-        if (playing) {
+    private fun refreshForegroundState() {
+        if (!hasUsageAccess()) { setTargetAppForeground(false); return }
+        val selected = MediaAppPreferences.getSelectedPackages(this)
+        if (selected.isEmpty()) { setTargetAppForeground(false); return }
+        val now = System.currentTimeMillis()
+        val events = usageStatsManager.queryEvents(now - 15000L, now)
+        val event = UsageEvents.Event()
+        var foreground = lastForegroundPackage
+        while (events.hasNextEvent()) {
+            events.getNextEvent(event)
+            when (event.eventType) {
+                UsageEvents.Event.MOVE_TO_FOREGROUND, UsageEvents.Event.ACTIVITY_RESUMED -> foreground = event.packageName
+                UsageEvents.Event.MOVE_TO_BACKGROUND, UsageEvents.Event.ACTIVITY_PAUSED, UsageEvents.Event.ACTIVITY_STOPPED ->
+                    if (foreground == event.packageName) foreground = null
+            }
+        }
+        lastForegroundPackage = foreground
+        setTargetAppForeground(foreground in selected)
+    }
+
+    private fun setTargetAppForeground(active: Boolean) {
+        if (targetAppForeground == active) return
+        targetAppForeground = active
+        if (active) {
             lastActivityAt = SystemClock.elapsedRealtime()
             stillSince = 0L
-            if (screenInteractive && !triggered.get()) {
+            triggered.set(false)
+            if (screenInteractive) {
                 registerMotionSensor()
-                updateNotification("检测到媒体播放；进入低功耗等待")
+                updateNotification("已进入所选应用；开始低功耗等待")
                 scheduleDetection(NO_ACTIVITY_REQUIRED_MS)
-            } else {
-                updateNotification("屏幕关闭；睡眠检测保持停止")
             }
         } else {
             detectionJob?.cancel()
@@ -201,18 +182,12 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             triggered.set(false)
             eyesClosedSince = 0L
             consecutiveOpenEyeChecks = 0
-            val hasSelection = MediaAppPreferences.getSelectedPackages(this).isNotEmpty()
-            updateNotification(
-                if (hasSelection) "所选应用当前没有媒体播放；摄像头保持关闭"
-                else "尚未选择媒体应用；摄像头保持关闭"
-            )
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            updateNotification("当前不在所选应用；摄像头与睡眠检测已暂停")
         }
     }
 
     private fun resumeMonitoringIfEligible() {
-        if (!screenInteractive || !mediaPlaying || triggered.get()) return
+        if (!screenInteractive || !targetAppForeground || triggered.get()) return
         lastActivityAt = SystemClock.elapsedRealtime()
         stillSince = 0L
         registerMotionSensor()
@@ -235,7 +210,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        if (!screenInteractive || !mediaPlaying || triggered.get() ||
+        if (!screenInteractive || !targetAppForeground || triggered.get() ||
             event?.sensor?.type != Sensor.TYPE_ACCELEROMETER) return
         val magnitude = kotlin.math.sqrt(
             event.values[0] * event.values[0] +
@@ -258,10 +233,10 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     private fun scheduleDetection(delayMs: Long) {
         detectionJob?.cancel()
-        if (!screenInteractive || !mediaPlaying || triggered.get()) return
+        if (!screenInteractive || !targetAppForeground || triggered.get()) return
         detectionJob = scope.launch {
             delay(delayMs.coerceAtLeast(0L))
-            if (!screenInteractive || !mediaPlaying || triggered.get()) return@launch
+            if (!screenInteractive || !targetAppForeground || triggered.get()) return@launch
             val now = SystemClock.elapsedRealtime()
             val idleFor = now - lastActivityAt
             if (idleFor < NO_ACTIVITY_REQUIRED_MS) {
@@ -281,7 +256,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     private fun startCameraCheck() {
-        if (cameraJob?.isActive == true || !screenInteractive || !mediaPlaying || triggered.get()) return
+        if (cameraJob?.isActive == true || !screenInteractive || !targetAppForeground || triggered.get()) return
         cameraJob = scope.launch {
             eyesClosedSince = 0L
             updateNotification("正在进行短时睡眠确认")
@@ -292,7 +267,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             } catch (_: Exception) {
                 updateNotification("本轮摄像头检测未能启动；稍后重试")
             }
-            if (!triggered.get() && screenInteractive && mediaPlaying && isActive) {
+            if (!triggered.get() && screenInteractive && targetAppForeground && isActive) {
                 consecutiveOpenEyeChecks = (consecutiveOpenEyeChecks + 1).coerceAtMost(4)
                 val minutes = when (consecutiveOpenEyeChecks) {
                     1 -> 15
@@ -333,14 +308,14 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     private fun analyzeFrame(proxy: ImageProxy) {
         val mediaImage = proxy.image
-        if (mediaImage == null || triggered.get() || !screenInteractive || !mediaPlaying) {
+        if (mediaImage == null || triggered.get() || !screenInteractive || !targetAppForeground) {
             proxy.close()
             return
         }
         val image = InputImage.fromMediaImage(mediaImage, proxy.imageInfo.rotationDegrees)
         detector.process(image)
             .addOnSuccessListener(cameraExecutor) { faces ->
-                if (!screenInteractive || !mediaPlaying || triggered.get()) return@addOnSuccessListener
+                if (!screenInteractive || !targetAppForeground || triggered.get()) return@addOnSuccessListener
                 val face = faces.firstOrNull()
                 val left = face?.leftEyeOpenProbability
                 val right = face?.rightEyeOpenProbability
@@ -352,7 +327,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     val phoneStillLongEnough = stillSince > 0L && now - stillSince >= PHONE_STILL_REQUIRED_MS
                     val power = getSystemService(Context.POWER_SERVICE) as PowerManager
                     if (eyesClosedLongEnough && phoneStillLongEnough &&
-                        screenInteractive && power.isInteractive && mediaPlaying &&
+                        screenInteractive && power.isInteractive && targetAppForeground &&
                         triggered.compareAndSet(false, true)) {
                         scope.launch { performProtection() }
                     }
@@ -365,7 +340,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     private suspend fun performProtection() {
         val power = getSystemService(Context.POWER_SERVICE) as PowerManager
-        if (!screenInteractive || !power.isInteractive || !mediaPlaying) {
+        if (!screenInteractive || !power.isInteractive || !targetAppForeground) {
             triggered.set(false)
             return
         }
@@ -373,7 +348,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         detectionJob?.cancel()
         unregisterMotionSensor()
         withContext(Dispatchers.Main) { cameraProvider?.unbindAll() }
-        if (!screenInteractive || !power.isInteractive || !mediaPlaying) {
+        if (!screenInteractive || !power.isInteractive || !targetAppForeground) {
             triggered.set(false)
             return
         }
@@ -381,8 +356,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         if (dpm.isAdminActive(ComponentName(this, SleepGuardAdminReceiver::class.java))) {
             dpm.lockNow()
         } else {
-            updateNotification("未激活设备管理员，无法自动锁屏")
-            triggered.set(false)
+            updateNotification("已确认睡眠；尝试返回桌面")
+            try { startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) { }
         }
     }
 
@@ -392,13 +367,9 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         running.value = false
         detectionJob?.cancel()
         cameraJob?.cancel()
+        foregroundMonitorJob?.cancel()
         scope.cancel()
         unregisterMotionSensor()
-        controllerCallbacks.forEach { (controller, callback) ->
-            try { controller.unregisterCallback(callback) } catch (_: Exception) { }
-        }
-        controllerCallbacks.clear()
-        try { mediaSessionManager.removeOnActiveSessionsChangedListener(activeSessionsListener) } catch (_: Exception) { }
         try { unregisterReceiver(screenReceiver) } catch (_: Exception) { }
         cameraProvider?.unbindAll()
         detector.close()
