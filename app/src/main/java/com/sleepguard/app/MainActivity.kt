@@ -17,9 +17,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
 class MainActivity : ComponentActivity() {
-    private var cameraGranted by mutableStateOf(false)
-    private var adminActive by mutableStateOf(false)
-    private var listenerEnabled by mutableStateOf(false)
+    var cameraGranted by mutableStateOf(false)
+    var adminActive by mutableStateOf(false)
+    var listenerEnabled by mutableStateOf(false)
     private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         cameraGranted = it
     }
@@ -110,12 +110,12 @@ private fun SleepGuardScreen(activity: MainActivity) {
                 OutlinedButton(onClick = {
                     ProtectionService.stop(activity)
                     running = false
-                }, enabled = running, Modifier.fillMaxWidth()) { Text("停止保护") }
+                }, enabled = running, modifier = Modifier.fillMaxWidth()) { Text("停止保护") }
                 OutlinedButton(onClick = {
                     if (activity.adminActive) {
                         (activity.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager).lockNow()
                     }
-                }, Modifier.fillMaxWidth()) { Text("测试锁屏") }
+                }, modifier = Modifier.fillMaxWidth()) { Text("测试锁屏") }
                 Text("提示：小米系统请为 SleepGuard 开启自启动，并将电池省电策略设为无限制。锁屏后系统可能暂停摄像头；本应用会在下一轮重新尝试。")
             }
         }
