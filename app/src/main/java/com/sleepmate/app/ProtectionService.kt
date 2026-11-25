@@ -3,6 +3,7 @@ package com.sleepmate.app
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.admin.DevicePolicyManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
@@ -401,14 +402,23 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         }
     }
 
-    private fun notification(message: String): Notification =
-        NotificationCompat.Builder(this, CHANNEL_ID)
+    private fun notification(message: String): Notification {
+        val openAppIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val contentPendingIntent = PendingIntent.getActivity(
+            this, 0, openAppIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentIntent(contentPendingIntent)
             .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
             .setContentTitle("SleepMate")
             .setContentText(message)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .build()
+    }
 
     private fun updateNotification(message: String) {
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(message))
