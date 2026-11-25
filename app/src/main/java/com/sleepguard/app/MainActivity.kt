@@ -5,25 +5,41 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 data class InstalledMediaApp(
     val packageName: String,
     val label: String
 )
+
+private enum class Screen {
+    HOME, SETTINGS, MEDIA_APPS, STRATEGY, ABOUT
+}
 
 class MainActivity : ComponentActivity() {
     var cameraGranted by mutableStateOf(false)
@@ -40,7 +56,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         refreshPermissions()
         if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
-        setContent { SleepGuardScreen(this) }
+        setContent { SleepGuardApp(this) }
     }
 
     override fun onResume() {
@@ -75,11 +91,20 @@ class MainActivity : ComponentActivity() {
 
     fun requestCamera() = cameraPermission.launch(android.Manifest.permission.CAMERA)
     fun openNotificationAccess() = startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+
+    fun openAdminActivation() {
+        val component = ComponentName(this, SleepGuardAdminReceiver::class.java)
+        startActivity(Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+            putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, component)
+            putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "允许 SleepGuard 在确认符合睡眠条件后锁定屏幕。")
+        })
+    }
 }
 
 @Composable
-private fun SleepGuardScreen(activity: MainActivity) {
-    var running by remember { mutableStateOf(false) }
+private fun SleepGuardApp(activity: MainActivity) {
+    var screen by rememberSaveable { mutableStateOf(Screen.HOME.name) }
+    var running by rememberSaveable { mutableStateOf(false) }
     var selectedPackages by remember {
         mutableStateOf(MediaAppPreferences.getSelectedPackages(activity))
     }
@@ -96,154 +121,330 @@ private fun SleepGuardScreen(activity: MainActivity) {
     }
 
     MaterialTheme {
-        Surface(Modifier.fillMaxSize()) {
-            Column(
-                Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text("SleepGuard", style = MaterialTheme.typography.headlineLarge)
-                Text("智能防睡眠 · 低功耗保护")
-
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("保护状态", style = MaterialTheme.typography.titleMedium)
-                        Text(if (running) "运行中：仅监测已选择的媒体应用" else "已停止")
-                        Button(
-                            onClick = {
-                                activity.refreshPermissions()
-                                if (!activity.cameraGranted) activity.requestCamera()
-                                else if (!activity.listenerEnabled) activity.openNotificationAccess()
-                                else {
-                                    ProtectionService.start(activity)
-                                    running = true
-                                }
-                            },
-                            enabled = !running,
-                            modifier = Modifier.fillMaxWidth()
-                        ) { Text("启动智能保护") }
-                        OutlinedButton(
-                            onClick = {
-                                ProtectionService.stop(activity)
-                                running = false
-                            },
-                            enabled = running,
-                            modifier = Modifier.fillMaxWidth()
-                        ) { Text("停止保护") }
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            when (Screen.valueOf(screen)) {
+                Screen.HOME -> HomeScreen(
+                    activity = activity,
+                    running = running,
+                    selectedCount = selectedPackages.size,
+                    onSettings = { screen = Screen.SETTINGS.name },
+                    onStart = {
+                        activity.refreshPermissions()
+                        if (!activity.cameraGranted) activity.requestCamera()
+                        else if (!activity.listenerEnabled) activity.openNotificationAccess()
+                        else {
+                            ProtectionService.start(activity)
+                            running = true
+                        }
+                    },
+                    onStop = {
+                        ProtectionService.stop(activity)
+                        running = false
                     }
-                }
-
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("媒体应用管理", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            "只保护你勾选的应用。未勾选的应用不会触发睡眠检测，也不会被 SleepGuard 暂停。",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            TextButton(
-                                onClick = { updateSelection(activity.installedMediaApps.map { it.packageName }.toSet()) },
-                                modifier = Modifier.weight(1f)
-                            ) { Text("全选") }
-                            TextButton(
-                                onClick = { updateSelection(emptySet()) },
-                                modifier = Modifier.weight(1f)
-                            ) { Text("全不选") }
-                            Text(
-                                "已选 ${selectedPackages.size} 个",
-                                style = MaterialTheme.typography.labelMedium,
-                                modifier = Modifier.align(Alignment.CenterVertically)
-                            )
-                        }
-                        if (activity.installedMediaApps.isEmpty()) {
-                            Text("没有读取到可启动的应用。请稍后刷新。", style = MaterialTheme.typography.bodySmall)
-                        } else {
-                            activity.installedMediaApps.forEach { app ->
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(Modifier.weight(1f)) {
-                                        Text(app.label, style = MaterialTheme.typography.bodyLarge)
-                                        Text(app.packageName, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    }
-                                    Checkbox(
-                                        checked = app.packageName in selectedPackages,
-                                        onCheckedChange = { checked ->
-                                            val updated = selectedPackages.toMutableSet()
-                                            if (checked) updated.add(app.packageName) else updated.remove(app.packageName)
-                                            updateSelection(updated)
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                        OutlinedButton(
-                            onClick = { activity.refreshPermissions() },
-                            modifier = Modifier.fillMaxWidth()
-                        ) { Text("刷新应用列表") }
-                        if (selectedPackages.isEmpty()) {
-                            Text("当前没有选择任何应用，因此不会启动媒体睡眠检测。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                }
-
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("权限状态", style = MaterialTheme.typography.titleMedium)
-                        Text("摄像头：${if (activity.cameraGranted) "已授权" else "未授权"}")
-                        Text("媒体通知访问：${if (activity.listenerEnabled) "已授权" else "未授权（无法判断媒体播放状态）"}")
-                        Text("设备管理员：${if (activity.adminActive) "已激活" else "未激活（无法自动锁屏）"}")
-                        OutlinedButton(onClick = { activity.requestCamera() }, Modifier.fillMaxWidth()) {
-                            Text("授权摄像头")
-                        }
-                        OutlinedButton(onClick = { activity.openNotificationAccess() }, Modifier.fillMaxWidth()) {
-                            Text("开启媒体通知访问")
-                        }
-                        OutlinedButton(onClick = {
-                            val component = ComponentName(activity, SleepGuardAdminReceiver::class.java)
-                            activity.startActivity(Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
-                                putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, component)
-                                putExtra(
-                                    DevicePolicyManager.EXTRA_ADD_EXPLANATION,
-                                    "允许 SleepGuard 在确认符合睡眠条件后锁定屏幕。"
-                                )
-                            })
-                        }, Modifier.fillMaxWidth()) {
-                            Text("激活自动锁屏权限")
-                        }
-                        OutlinedButton(onClick = { activity.refreshPermissions() }, Modifier.fillMaxWidth()) {
-                            Text("刷新权限状态")
-                        }
-                    }
-                }
-
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("低功耗监测策略", style = MaterialTheme.typography.titleMedium)
-                        Text("• 只有已勾选应用正在播放媒体时，才进入睡眠检测流程。")
-                        Text("• 未勾选应用的播放状态不会触发检测，也不会被暂停。")
-                        Text("• 设备连续无明显活动5分钟后才进入检测准备。")
-                        Text("• 手机静止确认8秒后，摄像头才短暂启动，单次最长30秒。")
-                        Text("• 未发现持续闭眼时，复查间隔依次为15、20、25、最多30分钟。")
-                        Text("• 检测画面仅在本机处理，不上传。")
-                    }
-                }
-
-                OutlinedButton(
-                    onClick = {
+                )
+                Screen.SETTINGS -> SettingsScreen(
+                    onBack = { screen = Screen.HOME.name },
+                    onMediaApps = { screen = Screen.MEDIA_APPS.name },
+                    onStrategy = { screen = Screen.STRATEGY.name },
+                    onAbout = { screen = Screen.ABOUT.name },
+                    onTestLock = {
                         activity.refreshPermissions()
                         if (activity.adminActive) {
                             (activity.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager).lockNow()
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("测试锁屏") }
-
-                Text("提示：应用列表显示具有桌面启动入口的已安装应用。个别没有标准媒体会话的应用，即使勾选也可能无法被识别。小米系统建议为 SleepGuard 开启自启动，并将电池策略设为无限制。")
+                        } else activity.openAdminActivation()
+                    }
+                )
+                Screen.MEDIA_APPS -> MediaAppsScreen(
+                    activity = activity,
+                    selectedPackages = selectedPackages,
+                    onBack = { screen = Screen.SETTINGS.name },
+                    onSelectionChanged = ::updateSelection
+                )
+                Screen.STRATEGY -> StrategyScreen(onBack = { screen = Screen.SETTINGS.name })
+                Screen.ABOUT -> AboutScreen(activity = activity, onBack = { screen = Screen.SETTINGS.name })
             }
         }
+    }
+}
+
+@Composable
+private fun PageHeader(title: String, onBack: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TextButton(onClick = onBack) { Text("‹ 返回") }
+        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun HomeScreen(
+    activity: MainActivity,
+    running: Boolean,
+    selectedCount: Int,
+    onSettings: () -> Unit,
+    onStart: () -> Unit,
+    onStop: () -> Unit
+) {
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Image(
+                painter = painterResource(R.drawable.ic_sleepguard_foreground),
+                contentDescription = "SleepGuard 正式图标",
+                modifier = Modifier.size(72.dp),
+                contentScale = ContentScale.Fit
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("SleepGuard", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text("用户睡着了，手机也该休息了。", style = MaterialTheme.typography.bodySmall)
+            }
+            TextButton(onClick = onSettings) { Text("设置") }
+        }
+
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("保护状态", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    if (running) "运行中：仅保护已选择的媒体应用"
+                    else "已停止",
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                Text("已选择 $selectedCount 个应用", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Button(onClick = onStart, enabled = !running, modifier = Modifier.fillMaxWidth()) {
+                    Text("启动智能保护")
+                }
+                OutlinedButton(onClick = onStop, enabled = running, modifier = Modifier.fillMaxWidth()) {
+                    Text("停止保护")
+                }
+            }
+        }
+
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("权限状态", style = MaterialTheme.typography.titleMedium)
+                PermissionLine("摄像头", activity.cameraGranted)
+                PermissionLine("媒体通知访问", activity.listenerEnabled)
+                PermissionLine("设备管理员（自动锁屏）", activity.adminActive)
+                OutlinedButton(onClick = { activity.requestCamera() }, Modifier.fillMaxWidth()) { Text("授权摄像头") }
+                OutlinedButton(onClick = { activity.openNotificationAccess() }, Modifier.fillMaxWidth()) { Text("开启媒体通知访问") }
+                OutlinedButton(onClick = { activity.openAdminActivation() }, Modifier.fillMaxWidth()) { Text("激活自动锁屏权限") }
+                TextButton(onClick = { activity.refreshPermissions() }, modifier = Modifier.align(Alignment.End)) { Text("刷新权限状态") }
+            }
+        }
+
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("系统运行提示", style = MaterialTheme.typography.titleMedium)
+                Text("小米 / Redmi 等系统建议为 SleepGuard 开启自启动，并将电池策略设为无限制。")
+                Text("应用列表只显示具有桌面启动入口的已安装应用；个别不提供标准媒体会话的应用，即使勾选也可能无法识别或暂停。", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PermissionLine(label: String, granted: Boolean) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, modifier = Modifier.weight(1f))
+        Text(if (granted) "已授权" else "未授权", color = if (granted) Color(0xFF16845B) else MaterialTheme.colorScheme.error)
+    }
+}
+
+@Composable
+private fun SettingsScreen(
+    onBack: () -> Unit,
+    onMediaApps: () -> Unit,
+    onStrategy: () -> Unit,
+    onAbout: () -> Unit,
+    onTestLock: () -> Unit
+) {
+    Column(Modifier.fillMaxSize()) {
+        PageHeader("设置", onBack)
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            SettingsEntry("媒体应用管理", "选择需要纳入睡眠保护的应用", onMediaApps)
+            SettingsEntry("低功耗监测策略", "查看检测流程、触发条件和时间安排", onStrategy)
+            SettingsEntry("关于 SleepGuard", "项目介绍、版本信息、开源协议", onAbout)
+            Spacer(Modifier.height(8.dp))
+            Text("辅助功能", style = MaterialTheme.typography.titleMedium)
+            OutlinedButton(onClick = onTestLock, modifier = Modifier.fillMaxWidth()) { Text("测试锁屏") }
+            Text("仅在已激活设备管理员权限时执行锁屏测试。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun SettingsEntry(title: String, subtitle: String, onClick: () -> Unit) {
+    Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text("›", style = MaterialTheme.typography.headlineMedium)
+        }
+    }
+}
+
+@Composable
+private fun MediaAppsScreen(
+    activity: MainActivity,
+    selectedPackages: Set<String>,
+    onBack: () -> Unit,
+    onSelectionChanged: (Set<String>) -> Unit
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+    val allApps = activity.installedMediaApps
+    val filteredApps = remember(allApps, query) {
+        if (query.isBlank()) allApps
+        else allApps.filter {
+            it.label.contains(query.trim(), ignoreCase = true) ||
+                it.packageName.contains(query.trim(), ignoreCase = true)
+        }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        PageHeader("媒体应用管理", onBack)
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            label = { Text("搜索应用名称或包名") },
+            singleLine = true,
+            trailingIcon = {
+                if (query.isNotEmpty()) TextButton(onClick = { query = "" }) { Text("清除") }
+            }
+        )
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = {
+                onSelectionChanged(allApps.map { it.packageName }.toSet())
+            }) { Text("全选") }
+            TextButton(onClick = { onSelectionChanged(emptySet()) }) { Text("全不选") }
+            Spacer(Modifier.weight(1f))
+            Text("已选 ${selectedPackages.size} 个", style = MaterialTheme.typography.labelLarge)
+            TextButton(onClick = { activity.refreshPermissions() }) { Text("刷新") }
+        }
+        HorizontalDivider()
+        if (filteredApps.isEmpty()) {
+            Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                Text(if (allApps.isEmpty()) "没有读取到可启动的应用，请刷新。" else "没有找到匹配的应用。")
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                items(filteredApps, key = { it.packageName }) { app ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(app.label, style = MaterialTheme.typography.bodyLarge)
+                            Text(app.packageName, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Checkbox(
+                            checked = app.packageName in selectedPackages,
+                            onCheckedChange = { checked ->
+                                val updated = selectedPackages.toMutableSet()
+                                if (checked) updated.add(app.packageName) else updated.remove(app.packageName)
+                                onSelectionChanged(updated)
+                            }
+                        )
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+                }
+            }
+        }
+        if (selectedPackages.isEmpty()) {
+            Text(
+                "当前没有选择任何应用，不会启动媒体睡眠检测。",
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+    }
+}
+
+@Composable
+private fun StrategyScreen(onBack: () -> Unit) {
+    Column(Modifier.fillMaxSize()) {
+        PageHeader("低功耗监测策略", onBack)
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text("工作流程", style = MaterialTheme.typography.titleMedium)
+            Text("1. 仅当你勾选的应用正在播放媒体时，SleepGuard 才进入睡眠检测准备状态。")
+            Text("2. 设备连续约 5 分钟没有明显活动后，进入检测准备。")
+            Text("3. 手机保持静止约 8 秒后，在 Android 系统允许的情况下短暂启动摄像头。")
+            Text("4. 单次摄像头检测最长约 30 秒；持续闭眼约 3 秒作为辅助判断条件。")
+            Text("5. 达到睡眠判定条件后，尝试暂停已选择应用的媒体会话，并在设备管理员已授权时锁定屏幕。")
+            HorizontalDivider()
+            Text("复查节奏", style = MaterialTheme.typography.titleMedium)
+            Text("未发现持续闭眼时，计划按 15、20、25 分钟递增复查，之后最多每 30 分钟复查。")
+            Text("用户活动、设备明显移动或媒体停止时，应取消当前睡眠候选并重新计时。")
+            HorizontalDivider()
+            Text("隐私与系统限制", style = MaterialTheme.typography.titleMedium)
+            Text("摄像头只在满足检测条件时短暂调用，画面设计为在本机处理，不上传。")
+            Text("Android 对后台摄像头访问有严格限制。屏幕关闭或应用处于后台时，系统可能不允许启动摄像头；实际行为受 Android 版本和厂商系统影响。")
+            Text("普通应用无法可靠读取其他应用内的全部触摸事件，设备运动只能作为活动代理信号。媒体识别和暂停能力取决于目标应用是否提供可访问的标准媒体会话。")
+            Text("以上为当前设计策略，不代表睡眠识别准确率、后台准点运行或省电效果已经通过真机验证。")
+        }
+    }
+}
+
+@Composable
+private fun AboutScreen(activity: MainActivity, onBack: () -> Unit) {
+    val versionName = remember {
+        try {
+            @Suppress("DEPRECATION")
+            activity.packageManager.getPackageInfo(activity.packageName, 0).versionName ?: "未知"
+        } catch (_: Exception) { "未知" }
+    }
+    Column(Modifier.fillMaxSize()) {
+        PageHeader("关于 SleepGuard", onBack)
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Image(
+                painter = painterResource(R.drawable.ic_sleepguard_foreground),
+                contentDescription = "SleepGuard 正式图标",
+                modifier = Modifier.size(88.dp),
+                contentScale = ContentScale.Fit
+            )
+            Text("SleepGuard", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text("用户睡着了，手机也该休息了。", style = MaterialTheme.typography.bodyMedium)
+            HorizontalDivider()
+            AboutLine("项目用途", "在用户观看视频或收听媒体内容时，尝试识别入睡状态，并在符合条件后暂停媒体、锁定屏幕，减少不必要的播放和亮屏耗电。")
+            AboutLine("版本", versionName)
+            AboutLine("项目状态", "开发原型，自动睡眠检测链路尚未完成全面构建与真机验证。")
+            AboutLine("开源协议", "GNU General Public License v3.0 only（GPL-3.0-only）")
+            AboutLine("隐私原则", "以本机处理为设计目标，不上传摄像头画面或人脸数据。")
+            TextButton(onClick = {
+                activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/Aiccest/SleepGuard-Android")))
+            }) { Text("访问 GitHub 项目主页") }
+        }
+    }
+}
+
+@Composable
+private fun AboutLine(title: String, value: String) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text(value, style = MaterialTheme.typography.bodyMedium)
     }
 }
