@@ -318,7 +318,7 @@ private fun PermissionLine(label: String, granted: Boolean) {
 @Composable
 private fun SettingsScreen(
     onBack: () -> Unit,
-    onMediaApps: () -> Unit,
+    onMonitorApps: () -> Unit,
     onStrategy: () -> Unit,
     onAbout: () -> Unit,
     onTestLock: () -> Unit
