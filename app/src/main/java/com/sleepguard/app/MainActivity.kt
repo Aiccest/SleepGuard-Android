@@ -110,7 +110,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun SleepGuardApp(activity: MainActivity) {
     var screen by rememberSaveable { mutableStateOf(Screen.HOME.name) }
-    var running by rememberSaveable { mutableStateOf(false) }
+    val running by ProtectionService.running.collectAsState()
     var selectedPackages by remember {
         mutableStateOf(MediaAppPreferences.getSelectedPackages(activity))
     }
@@ -118,7 +118,7 @@ private fun SleepGuardApp(activity: MainActivity) {
     fun updateSelection(updated: Set<String>) {
         selectedPackages = updated
         MediaAppPreferences.saveSelectedPackages(activity, updated)
-        if (running) {
+        if (ProtectionService.running.value) {
             activity.startService(
                 Intent(activity, ProtectionService::class.java)
                     .setAction(ProtectionService.ACTION_SELECTION_CHANGED)
@@ -154,12 +154,10 @@ private fun SleepGuardApp(activity: MainActivity) {
                                 ).show()
                             }
                             ProtectionService.start(activity)
-                            running = true
                         }
                     },
                     onStop = {
                         ProtectionService.stop(activity)
-                        running = false
                     }
                 )
                 Screen.SETTINGS -> SettingsScreen(
