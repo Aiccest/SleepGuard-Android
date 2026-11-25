@@ -34,6 +34,7 @@ import com.google.mlkit.vision.face.FaceDetectorOptions
 import kotlinx.coroutines.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -50,7 +51,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private var stillSince = 0L
     private var eyesClosedSince = 0L
     private var consecutiveOpenEyeChecks = 0
-    @Volatile private var triggered = false
+    private val triggered = AtomicBoolean(false)
+    @Volatile private var screenInteractive = true
 
     private var detectionJob: Job? = null
     private var cameraJob: Job? = null
@@ -72,11 +74,22 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> {
+                    screenInteractive = false
+                    detectionJob?.cancel()
+                    detectionJob = null
                     cameraJob?.cancel()
+                    cameraJob = null
+                    eyesClosedSince = 0L
+                    stillSince = 0L
+                    unregisterMotionSensor()
                     scope.launch { withContext(Dispatchers.Main) { cameraProvider?.unbindAll() } }
-                    updateNotification("屏幕已关闭；等待下次允许检测的时机")
+                    updateNotification("屏幕已关闭；睡眠检测与摄像头已停止")
                 }
-                Intent.ACTION_SCREEN_ON -> scheduleDetection(0L)
+                Intent.ACTION_SCREEN_ON -> {
+                    screenInteractive = true
+                    refreshPlaybackState()
+                    resumeMonitoringIfEligible()
+                }
             }
         }
     }
@@ -92,6 +105,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         detector = FaceDetection.getClient(options)
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+        screenInteractive = (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
@@ -169,9 +183,13 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         if (playing) {
             lastActivityAt = SystemClock.elapsedRealtime()
             stillSince = 0L
-            registerMotionSensor()
-            updateNotification("检测到媒体播放；进入低功耗等待")
-            scheduleDetection(NO_ACTIVITY_REQUIRED_MS)
+            if (screenInteractive && !triggered.get()) {
+                registerMotionSensor()
+                updateNotification("检测到媒体播放；进入低功耗等待")
+                scheduleDetection(NO_ACTIVITY_REQUIRED_MS)
+            } else {
+                updateNotification("屏幕关闭；睡眠检测保持停止")
+            }
         } else {
             detectionJob?.cancel()
             cameraJob?.cancel()
@@ -184,6 +202,15 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 else "尚未选择媒体应用；摄像头保持关闭"
             )
         }
+    }
+
+    private fun resumeMonitoringIfEligible() {
+        if (!screenInteractive || !mediaPlaying || triggered.get()) return
+        lastActivityAt = SystemClock.elapsedRealtime()
+        stillSince = 0L
+        registerMotionSensor()
+        updateNotification("屏幕已亮起且媒体仍在播放；重新开始低功耗等待")
+        scheduleDetection(NO_ACTIVITY_REQUIRED_MS)
     }
 
     private fun registerMotionSensor() {
@@ -201,7 +228,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        if (!mediaPlaying || event?.sensor?.type != Sensor.TYPE_ACCELEROMETER) return
+        if (!screenInteractive || !mediaPlaying || triggered.get() ||
+            event?.sensor?.type != Sensor.TYPE_ACCELEROMETER) return
         val magnitude = kotlin.math.sqrt(
             event.values[0] * event.values[0] +
             event.values[1] * event.values[1] +
@@ -223,10 +251,10 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     private fun scheduleDetection(delayMs: Long) {
         detectionJob?.cancel()
-        if (!mediaPlaying || triggered) return
+        if (!screenInteractive || !mediaPlaying || triggered.get()) return
         detectionJob = scope.launch {
             delay(delayMs.coerceAtLeast(0L))
-            if (!mediaPlaying || triggered) return@launch
+            if (!screenInteractive || !mediaPlaying || triggered.get()) return@launch
             val now = SystemClock.elapsedRealtime()
             val idleFor = now - lastActivityAt
             if (idleFor < NO_ACTIVITY_REQUIRED_MS) {
@@ -240,16 +268,13 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 return@launch
             }
             val power = getSystemService(Context.POWER_SERVICE) as PowerManager
-            if (!power.isInteractive) {
-                updateNotification("屏幕关闭；等待屏幕重新亮起后检测")
-                return@launch
-            }
+            if (!power.isInteractive || !screenInteractive) return@launch
             startCameraCheck()
         }
     }
 
     private fun startCameraCheck() {
-        if (cameraJob?.isActive == true || !mediaPlaying || triggered) return
+        if (cameraJob?.isActive == true || !screenInteractive || !mediaPlaying || triggered.get()) return
         cameraJob = scope.launch {
             eyesClosedSince = 0L
             updateNotification("正在进行短时睡眠确认")
@@ -260,7 +285,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             } catch (_: Exception) {
                 updateNotification("本轮摄像头检测未能启动；稍后重试")
             }
-            if (!triggered && mediaPlaying && isActive) {
+            if (!triggered.get() && screenInteractive && mediaPlaying && isActive) {
                 consecutiveOpenEyeChecks = (consecutiveOpenEyeChecks + 1).coerceAtMost(4)
                 val minutes = when (consecutiveOpenEyeChecks) {
                     1 -> 15
@@ -301,7 +326,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     private fun analyzeFrame(proxy: ImageProxy) {
         val mediaImage = proxy.image
-        if (mediaImage == null || triggered) {
+        if (mediaImage == null || triggered.get() || !screenInteractive || !mediaPlaying) {
             proxy.close()
             return
         }
@@ -317,8 +342,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     if (eyesClosedSince == 0L) eyesClosedSince = now
                     val eyesClosedLongEnough = now - eyesClosedSince >= EYES_CLOSED_REQUIRED_MS
                     val phoneStillLongEnough = stillSince > 0L && now - stillSince >= PHONE_STILL_REQUIRED_MS
-                    if (eyesClosedLongEnough && phoneStillLongEnough && !triggered) {
-                        triggered = true
+                    if (eyesClosedLongEnough && phoneStillLongEnough &&
+                        triggered.compareAndSet(false, true)) {
                         scope.launch { performProtection() }
                     }
                 } else {
@@ -329,7 +354,10 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     private suspend fun performProtection() {
-        updateNotification("确认符合睡眠条件；正在暂停媒体并锁屏")
+        updateNotification("确认符合睡眠条件；正在暂停媒体并准备锁屏")
+        detectionJob?.cancel()
+        unregisterMotionSensor()
+        withContext(Dispatchers.Main) { cameraProvider?.unbindAll() }
         pauseActiveMediaSessions()
         delay(500)
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
@@ -337,7 +365,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             dpm.lockNow()
         } else {
             updateNotification("已暂停媒体，但未激活设备管理员，无法自动锁屏")
-            triggered = false
+            triggered.set(false)
         }
     }
 
