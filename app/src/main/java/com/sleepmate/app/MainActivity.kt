@@ -205,7 +205,7 @@ private fun SleepGuardApp(activity: MainActivity) {
                         } else activity.openAdminActivation()
                     }
                 )
-                Screen.MEDIA_APPS -> MonitorAppsScreen(
+                Screen.MONITOR_APPS -> MonitorAppsScreen(
                     activity = activity,
                     selectedPackages = selectedPackages,
                     onBack = { screen = Screen.SETTINGS.name },
@@ -354,7 +354,7 @@ private fun SettingsEntry(title: String, subtitle: String, onClick: () -> Unit) 
 }
 
 @Composable
-private fun MediaAppsScreen(
+private fun MonitorAppsScreen(
     activity: MainActivity,
     selectedPackages: Set<String>,
     onBack: () -> Unit,
