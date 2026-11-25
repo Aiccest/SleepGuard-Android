@@ -195,6 +195,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             cameraJob?.cancel()
             unregisterMotionSensor()
             scope.launch { withContext(Dispatchers.Main) { cameraProvider?.unbindAll() } }
+            triggered.set(false)
+            eyesClosedSince = 0L
             consecutiveOpenEyeChecks = 0
             val hasSelection = MediaAppPreferences.getSelectedPackages(this).isNotEmpty()
             updateNotification(
