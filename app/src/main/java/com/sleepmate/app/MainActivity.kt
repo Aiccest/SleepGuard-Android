@@ -57,7 +57,7 @@ class MainActivity : ComponentActivity() {
     var adminActive by mutableStateOf(false)
     var usageAccessGranted by mutableStateOf(false)
     var notificationsGranted by mutableStateOf(true)
-    var installedMediaApps by mutableStateOf<List<InstalledMonitorApp>>(emptyList())
+    var installedMonitorApps by mutableStateOf<List<InstalledMonitorApp>>(emptyList())
     var appsLoading by mutableStateOf(false)
     private var appLoadJob: Job? = null
 
@@ -118,7 +118,7 @@ class MainActivity : ComponentActivity() {
                     .distinctBy { it.packageName }
                     .sortedBy { it.label.lowercase() }
             }
-            installedMediaApps = apps
+            installedMonitorApps = apps
             appsLoading = false
         }
     }
@@ -329,7 +329,7 @@ private fun SettingsScreen(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            SettingsEntry("监测应用管理", "选择需要纳入睡眠保护的应用", onMediaApps)
+            SettingsEntry("监测应用管理", "选择需要纳入睡眠保护的应用", onMonitorApps)
             SettingsEntry("低功耗监测策略", "查看检测流程、触发条件和时间安排", onStrategy)
             SettingsEntry("关于 SleepMate", "项目介绍、版本信息、开源协议", onAbout)
             Spacer(Modifier.height(8.dp))
@@ -361,7 +361,7 @@ private fun MonitorAppsScreen(
     onSelectionChanged: (Set<String>) -> Unit
 ) {
     var query by rememberSaveable { mutableStateOf("") }
-    val allApps = activity.installedMediaApps
+    val allApps = activity.installedMonitorApps
     val sortedApps = remember(allApps, selectedPackages) {
         allApps.sortedWith(compareByDescending<InstalledMonitorApp> { it.packageName in selectedPackages }
             .thenBy { it.label.lowercase() })
