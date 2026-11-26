@@ -456,11 +456,13 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 SleepMateLog.add(this, "已向默认桌面发送明确组件跳转请求；未抛异常（不代表系统已完成切换）")
                 updateNotification("已发送桌面跳转请求；正在核实前台")
                 scope.launch {
-                    for (delayMs in listOf(500L, 1500L, 3000L)) {
-                        delay(delayMs)
+                    var previousCheckAt = 0L
+                    for (checkAtMs in listOf(500L, 1500L, 3000L)) {
+                        delay(checkAtMs - previousCheckAt)
+                        previousCheckAt = checkAtMs
                         refreshForegroundState()
                         val returnedToLauncher = lastForegroundPackage == homeHandler.packageName
-                        val message = "发出HOME请求后${delayMs}毫秒：前台=$lastForegroundPackage；默认桌面=${homeHandler.packageName}；已回桌面=$returnedToLauncher；屏幕亮起=$screenInteractive"
+                        val message = "发出HOME请求后${checkAtMs}毫秒：前台=$lastForegroundPackage；默认桌面=${homeHandler.packageName}；已回桌面=$returnedToLauncher；屏幕亮起=$screenInteractive"
                         Log.i(TAG, "HOME_DIAG: $message")
                         SleepMateLog.add(this@ProtectionService, message)
                         if (returnedToLauncher || !screenInteractive) break
