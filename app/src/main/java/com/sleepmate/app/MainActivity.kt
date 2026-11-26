@@ -49,7 +49,7 @@ data class InstalledMonitorApp(
 )
 
 private enum class Screen {
-    HOME, SETTINGS, MONITOR_APPS, STRATEGY, ABOUT
+    HOME, SETTINGS, MONITOR_APPS, STRATEGY, ABOUT, LOGS
 }
 
 class MainActivity : ComponentActivity() {
@@ -198,6 +198,7 @@ private fun SleepGuardApp(activity: MainActivity) {
                     onMonitorApps = { screen = Screen.MONITOR_APPS.name },
                     onStrategy = { screen = Screen.STRATEGY.name },
                     onAbout = { screen = Screen.ABOUT.name },
+                    onLogs = { screen = Screen.LOGS.name },
                     onTestLock = {
                         activity.refreshPermissions()
                         if (activity.adminActive) {
@@ -213,6 +214,7 @@ private fun SleepGuardApp(activity: MainActivity) {
                 )
                 Screen.STRATEGY -> StrategyScreen(onBack = { screen = Screen.SETTINGS.name })
                 Screen.ABOUT -> AboutScreen(activity = activity, onBack = { screen = Screen.SETTINGS.name })
+                Screen.LOGS -> LogsScreen(activity = activity, onBack = { screen = Screen.SETTINGS.name })
             }
         }
     }
@@ -321,6 +323,7 @@ private fun SettingsScreen(
     onMonitorApps: () -> Unit,
     onStrategy: () -> Unit,
     onAbout: () -> Unit,
+    onLogs: () -> Unit,
     onTestLock: () -> Unit
 ) {
     Column(Modifier.fillMaxSize()) {
@@ -332,6 +335,7 @@ private fun SettingsScreen(
             SettingsEntry("监测应用管理", "选择需要纳入睡眠保护的应用", onMonitorApps)
             SettingsEntry("低功耗监测策略", "查看检测流程、触发条件和时间安排", onStrategy)
             SettingsEntry("关于 SleepMate", "项目介绍、版本信息、开源协议", onAbout)
+            SettingsEntry("运行日志", "查看睡眠保护与返回桌面诊断记录", onLogs)
             Spacer(Modifier.height(8.dp))
             Text("辅助功能", style = MaterialTheme.typography.titleMedium)
             OutlinedButton(onClick = onTestLock, modifier = Modifier.fillMaxWidth()) { Text("测试锁屏") }
@@ -529,5 +533,31 @@ private fun AboutLine(title: String, value: String) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         Text(value, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+@Composable
+private fun LogsScreen(activity: MainActivity, onBack: () -> Unit) {
+    var entries by remember { mutableStateOf(SleepMateLog.read(activity)) }
+    Column(Modifier.fillMaxSize()) {
+        PageHeader("运行日志", onBack)
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { entries = SleepMateLog.read(activity) }) { Text("刷新") }
+            OutlinedButton(onClick = {
+                val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("SleepMate运行日志", entries.joinToString("\n")))
+                android.widget.Toast.makeText(activity, "日志已复制", android.widget.Toast.LENGTH_SHORT).show()
+            }, enabled = entries.isNotEmpty()) { Text("复制日志") }
+            OutlinedButton(onClick = { SleepMateLog.clear(activity); entries = emptyList() }) { Text("清空") }
+        }
+        Text("日志保存在本机，仅保留最近300条。触发一次睡眠保护后点刷新，再复制发给我。", Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall)
+        HorizontalDivider()
+        if (entries.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("暂无日志") }
+        else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
+            items(entries.reversed()) { line ->
+                Text(line, Modifier.fillMaxWidth().padding(vertical = 5.dp), style = MaterialTheme.typography.bodySmall)
+                HorizontalDivider()
+            }
+        }
     }
 }
