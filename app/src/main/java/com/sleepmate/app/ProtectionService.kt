@@ -440,11 +440,14 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             val homeHandler = homeIntent.resolveActivity(packageManager)
             Log.i(TAG, "HOME_DIAG: sleep confirmed; admin inactive; currentForeground=$lastForegroundPackage; targetForeground=$targetAppForeground")
+            SleepMateLog.add(this, "确认睡眠；设备管理员未启用；当前前台=$lastForegroundPackage；目标应用前台=$targetAppForeground")
             Log.i(TAG, "HOME_DIAG: resolvedHomeActivity=$homeHandler")
+            SleepMateLog.add(this, "桌面处理程序=$homeHandler")
             updateNotification("已确认睡眠；正在尝试返回桌面")
             try {
                 startActivity(homeIntent)
                 Log.i(TAG, "HOME_DIAG: startActivity returned without exception")
+                SleepMateLog.add(this, "HOME 请求已发出，startActivity 未抛异常")
                 updateNotification("已发送返回桌面请求；正在检查切换结果")
                 scope.launch {
                     delay(1500L)
@@ -453,9 +456,11 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                         TAG,
                         "HOME_DIAG: after 1500ms foreground=$lastForegroundPackage; targetForeground=$targetAppForeground; screenInteractive=$screenInteractive"
                     )
+                    SleepMateLog.add(this@ProtectionService, "1.5秒后前台=$lastForegroundPackage；目标应用前台=$targetAppForeground；屏幕亮起=$screenInteractive")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "HOME_DIAG: startActivity failed: ${e.javaClass.simpleName}: ${e.message}", e)
+                SleepMateLog.add(this, "HOME 请求异常：${e.javaClass.simpleName}: ${e.message}")
                 updateNotification("返回桌面请求失败；请查看诊断日志")
             }
         }
