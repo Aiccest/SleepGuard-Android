@@ -22,6 +22,7 @@ import android.app.usage.UsageStatsManager
 import android.os.Process
 import android.os.PowerManager
 import android.os.SystemClock
+import android.util.Log
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -434,8 +435,29 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         if (dpm.isAdminActive(ComponentName(this, SleepGuardAdminReceiver::class.java))) {
             dpm.lockNow()
         } else {
-            updateNotification("已确认睡眠；尝试返回桌面")
-            try { startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) { }
+            val homeIntent = Intent(Intent.ACTION_MAIN)
+                .addCategory(Intent.CATEGORY_HOME)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val homeHandler = homeIntent.resolveActivity(packageManager)
+            Log.i(TAG, "HOME_DIAG: sleep confirmed; admin inactive; currentForeground=$lastForegroundPackage; targetForeground=$targetAppForeground")
+            Log.i(TAG, "HOME_DIAG: resolvedHomeActivity=$homeHandler")
+            updateNotification("已确认睡眠；正在尝试返回桌面")
+            try {
+                startActivity(homeIntent)
+                Log.i(TAG, "HOME_DIAG: startActivity returned without exception")
+                updateNotification("已发送返回桌面请求；正在检查切换结果")
+                scope.launch {
+                    delay(1500L)
+                    refreshForegroundState()
+                    Log.i(
+                        TAG,
+                        "HOME_DIAG: after 1500ms foreground=$lastForegroundPackage; targetForeground=$targetAppForeground; screenInteractive=$screenInteractive"
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "HOME_DIAG: startActivity failed: ${e.javaClass.simpleName}: ${e.message}", e)
+                updateNotification("返回桌面请求失败；请查看诊断日志")
+            }
         }
     }
 
@@ -504,6 +526,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         private const val MAX_REMEMBERED_USAGE_EVENTS = 128
         private const val CAMERA_WINDOW_MS = 30_000L
         private const val MOVEMENT_THRESHOLD = 1.0f
+        private const val TAG = "SleepMate"
         private const val CHANNEL_ID = "sleepguard_protection"
         private const val NOTIFICATION_ID = 1001
 
