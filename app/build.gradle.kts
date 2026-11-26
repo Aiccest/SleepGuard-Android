@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.sleepmate.app"
-    compileSdk = 35
+    compileSdk = 37
     defaultConfig {
         applicationId = "com.sleepmate.app"
         minSdk = 28
