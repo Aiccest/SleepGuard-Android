@@ -253,7 +253,7 @@ private fun HomeScreen(
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text("SleepMate", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text("用户睡着了，手机也该休息了。", style = MaterialTheme.typography.bodySmall)
+                Text("让用户安心入睡，让手机及时休息", style = MaterialTheme.typography.bodySmall)
             }
             TextButton(onClick = onSettings) { Text("设置") }
         }
@@ -387,18 +387,20 @@ private fun MonitorAppsScreen(
             }
         )
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text("选择后，该应用处于前台时启动睡眠监测；应用内页面、视频、直播和全屏均纳入。",
-                    modifier = Modifier.padding(start = 8.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Spacer(Modifier.weight(1f))
+            Text(
+                "前台使用所选应用时启动监测，应用内页面、视频和直播均纳入。",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Text("已选 ${selectedPackages.size} 个", style = MaterialTheme.typography.labelLarge)
-            TextButton(onClick = { activity.refreshPermissions() }) { Text("刷新") }
+            TextButton(
+                onClick = { activity.refreshPermissions() },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+            ) { Text("刷新") }
         }
         HorizontalDivider()
         if (activity.appsLoading) {
@@ -505,7 +507,7 @@ private fun AboutScreen(activity: MainActivity, onBack: () -> Unit) {
                 contentScale = ContentScale.Fit
             )
             Text("SleepMate", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Text("用户睡着了，手机也该休息了。", style = MaterialTheme.typography.bodyMedium)
+            Text("让用户安心入睡，让手机及时休息", style = MaterialTheme.typography.bodyMedium)
             HorizontalDivider()
             AboutLine("项目用途", "在用户使用指定应用时，尝试识别入睡状态，并在符合条件后直接锁定屏幕，减少不必要的亮屏耗电。")
             AboutLine("版本", versionName)
