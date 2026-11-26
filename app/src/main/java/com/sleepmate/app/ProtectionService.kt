@@ -433,61 +433,70 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             return
         }
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-        if (dpm.isAdminActive(ComponentName(this, SleepGuardAdminReceiver::class.java))) {
-            dpm.lockNow()
-        } else {
-            val overlayAllowed = Settings.canDrawOverlays(this)
-            Log.i(TAG, "HOME_DIAG: SYSTEM_ALERT_WINDOW granted=$overlayAllowed")
-            SleepMateLog.add(this, "悬浮窗特殊权限（SYSTEM_ALERT_WINDOW）已授权=$overlayAllowed")
-            if (!overlayAllowed) {
-                updateNotification("未授权悬浮窗特殊权限；后台返回桌面可能被系统拦截")
+        val adminActive = dpm.isAdminActive(ComponentName(this, SleepGuardAdminReceiver::class.java))
+        val overlayAllowed = Settings.canDrawOverlays(this)
+        Log.i(TAG, "HOME_DIAG: SYSTEM_ALERT_WINDOW granted=$overlayAllowed")
+        SleepMateLog.add(this, "悬浮窗特殊权限（SYSTEM_ALERT_WINDOW）已授权=$overlayAllowed")
+        Log.i(TAG, "HOME_DIAG: sleep confirmed; adminActive=$adminActive; currentForeground=$lastForegroundPackage; targetForeground=$targetAppForeground")
+        SleepMateLog.add(this, "确认睡眠；设备管理员已启用=$adminActive；当前前台=$lastForegroundPackage；目标应用前台=$targetAppForeground")
+
+        val homeIntent = Intent(Intent.ACTION_MAIN)
+            .addCategory(Intent.CATEGORY_HOME)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+        val homeHandler = homeIntent.resolveActivity(packageManager)
+        Log.i(TAG, "HOME_DIAG: resolvedHomeActivity=$homeHandler")
+        SleepMateLog.add(this, "解析到的默认桌面=$homeHandler")
+
+        try {
+            if (homeHandler == null) {
+                throw android.content.ActivityNotFoundException("No HOME activity resolved")
+            }
+            // Always return to the launcher first. Lock only after UsageStats confirms
+            // that the launcher is actually foreground, so we do not lock over a
+            // still-active media browser merely because startActivity returned.
+            homeIntent.component = homeHandler
+            updateNotification("已确认睡眠；正在先返回桌面")
+            startActivity(homeIntent)
+            Log.i(TAG, "HOME_DIAG: explicit launcher startActivity returned without exception")
+            SleepMateLog.add(this, "已向默认桌面发送明确组件跳转请求；等待确认前台切换")
+
+            var returnedToLauncher = false
+            var previousCheckAt = 0L
+            for (checkAtMs in listOf(500L, 1500L, 3000L)) {
+                delay(checkAtMs - previousCheckAt)
+                previousCheckAt = checkAtMs
+                refreshForegroundState()
+                returnedToLauncher = lastForegroundPackage == homeHandler.packageName
+                val message = "发出HOME请求后${checkAtMs}毫秒：前台=$lastForegroundPackage；默认桌面=${homeHandler.packageName}；已回桌面=$returnedToLauncher；屏幕亮起=$screenInteractive"
+                Log.i(TAG, "HOME_DIAG: $message")
+                SleepMateLog.add(this, message)
+                if (returnedToLauncher || !screenInteractive) break
+            }
+
+            if (!screenInteractive || !power.isInteractive) {
+                SleepMateLog.add(this, "返回桌面等待期间屏幕已关闭；不再执行后续锁屏")
+                return
+            }
+
+            if (!returnedToLauncher) {
+                updateNotification("未确认返回桌面；本次暂不锁屏，请查看运行日志")
+                SleepMateLog.add(this, "3秒内未确认返回桌面；为避免锁屏后媒体仍在前台播放，本次取消自动锁屏")
+                return
+            }
+
+            updateNotification("已确认返回桌面")
+            if (adminActive) {
+                SleepMateLog.add(this, "已确认返回桌面；现在执行设备管理员锁屏")
+                updateNotification("已返回桌面；正在锁定屏幕")
+                dpm.lockNow()
             } else {
-                updateNotification("已授权悬浮窗特殊权限；正在尝试返回桌面")
+                updateNotification("已返回桌面；设备管理员未启用，无法自动锁屏")
+                SleepMateLog.add(this, "已确认返回桌面；设备管理员未启用，本次仅返回桌面")
             }
-            val homeIntent = Intent(Intent.ACTION_MAIN)
-                .addCategory(Intent.CATEGORY_HOME)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-            val homeHandler = homeIntent.resolveActivity(packageManager)
-            Log.i(TAG, "HOME_DIAG: sleep confirmed; admin inactive; currentForeground=$lastForegroundPackage; targetForeground=$targetAppForeground")
-            SleepMateLog.add(this, "确认睡眠；设备管理员未启用；当前前台=$lastForegroundPackage；目标应用前台=$targetAppForeground")
-            Log.i(TAG, "HOME_DIAG: resolvedHomeActivity=$homeHandler")
-            SleepMateLog.add(this, "解析到的默认桌面=$homeHandler")
-            updateNotification("已确认睡眠；正在尝试返回桌面")
-            try {
-                if (homeHandler == null) {
-                    throw android.content.ActivityNotFoundException("No HOME activity resolved")
-                }
-                // Pin the resolved default launcher explicitly instead of relying on
-                // a second implicit HOME resolution during the background launch.
-                homeIntent.component = homeHandler
-                startActivity(homeIntent)
-                Log.i(TAG, "HOME_DIAG: explicit launcher startActivity returned without exception")
-                SleepMateLog.add(this, "已向默认桌面发送明确组件跳转请求；未抛异常（不代表系统已完成切换）")
-                updateNotification("已发送桌面跳转请求；正在核实前台")
-                scope.launch {
-                    // Check at elapsed offsets from the original request, not cumulative delays.
-                    var previousCheckAt = 0L
-                    for (checkAtMs in listOf(500L, 1500L, 3000L)) {
-                        delay(checkAtMs - previousCheckAt)
-                        previousCheckAt = checkAtMs
-                        refreshForegroundState()
-                        val returnedToLauncher = lastForegroundPackage == homeHandler.packageName
-                        val message = "发出HOME请求后${checkAtMs}毫秒：前台=$lastForegroundPackage；默认桌面=${homeHandler.packageName}；已回桌面=$returnedToLauncher；屏幕亮起=$screenInteractive"
-                        Log.i(TAG, "HOME_DIAG: $message")
-                        SleepMateLog.add(this@ProtectionService, message)
-                        if (returnedToLauncher || !screenInteractive) break
-                    }
-                    if (lastForegroundPackage != homeHandler.packageName && screenInteractive) {
-                        updateNotification("系统未确认已返回桌面；请查看运行日志")
-                    } else if (lastForegroundPackage == homeHandler.packageName) {
-                        updateNotification("已检测到返回桌面")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "HOME_DIAG: startActivity failed: ${e.javaClass.simpleName}: ${e.message}", e)
-                SleepMateLog.add(this, "HOME 请求异常：${e.javaClass.simpleName}: ${e.message}")
-                updateNotification("返回桌面请求失败；请查看诊断日志")
-            }
+        } catch (e: Exception) {
+            Log.e(TAG, "HOME_DIAG: launcher-first protection failed: ${e.javaClass.simpleName}: ${e.message}", e)
+            SleepMateLog.add(this, "先返回桌面流程异常：${e.javaClass.simpleName}: ${e.message}；本次不执行锁屏")
+            updateNotification("返回桌面失败；本次暂不锁屏，请查看诊断日志")
         }
     }
 
