@@ -229,7 +229,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private fun registerMotionSensor() {
         if (sensorRegistered) return
         val sensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return
-        // Sample at approximately 2 Hz without batching so movement callbacks are not delayed.
+        // Sample at approximately 3.3 Hz without batching so movement callbacks are not delayed.
         sensorRegistered = sensorManager.registerListener(
             this,
             sensor,
@@ -587,7 +587,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         const val ACTION_SELECTION_CHANGED = "com.sleepmate.app.SELECTION_CHANGED"
         private const val ACTIVE_FOREGROUND_POLL_MS = 2500L
         private const val IDLE_FOREGROUND_POLL_MS = 4500L
-        private const val MOTION_SENSOR_SAMPLING_PERIOD_US = 500_000
+        private const val MOTION_SENSOR_SAMPLING_PERIOD_US = 300_000
         private const val MOTION_SENSOR_MAX_REPORT_LATENCY_US = 0
         private const val EYES_CLOSED_REQUIRED_MS = 3000L
         private const val PHONE_STILL_REQUIRED_MS = 8000L
