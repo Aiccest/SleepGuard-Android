@@ -147,7 +147,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         foregroundMonitorJob = scope.launch {
             while (isActive) {
                 refreshForegroundState()
-                delay(3000L)
+                delay(if (targetAppForeground) ACTIVE_FOREGROUND_POLL_MS else IDLE_FOREGROUND_POLL_MS)
             }
         }
     }
@@ -229,7 +229,13 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private fun registerMotionSensor() {
         if (sensorRegistered) return
         val sensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return
-        sensorRegistered = sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+        // Sample at approximately 2 Hz without batching so movement callbacks are not delayed.
+        sensorRegistered = sensorManager.registerListener(
+            this,
+            sensor,
+            MOTION_SENSOR_SAMPLING_PERIOD_US,
+            MOTION_SENSOR_MAX_REPORT_LATENCY_US
+        )
         stillSince = 0L
     }
 
@@ -579,6 +585,10 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         const val ACTION_START = "com.sleepmate.app.START"
         const val ACTION_STOP = "com.sleepmate.app.STOP"
         const val ACTION_SELECTION_CHANGED = "com.sleepmate.app.SELECTION_CHANGED"
+        private const val ACTIVE_FOREGROUND_POLL_MS = 2500L
+        private const val IDLE_FOREGROUND_POLL_MS = 4500L
+        private const val MOTION_SENSOR_SAMPLING_PERIOD_US = 500_000
+        private const val MOTION_SENSOR_MAX_REPORT_LATENCY_US = 0
         private const val EYES_CLOSED_REQUIRED_MS = 3000L
         private const val PHONE_STILL_REQUIRED_MS = 8000L
         private const val NO_ACTIVITY_REQUIRED_MS = 5 * 60_000L
