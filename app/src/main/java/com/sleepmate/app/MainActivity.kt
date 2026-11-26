@@ -316,6 +316,7 @@ private fun HomeScreen(
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("系统运行提示", style = MaterialTheme.typography.titleMedium)
                 Text("小米 / Redmi 等系统建议为 SleepMate 开启自启动，并将电池策略设为无限制。")
+                Text("小米 / Redmi 手机还需要在系统权限管理中允许 SleepMate“后台弹出界面”，否则后台返回桌面可能受系统限制。")
                 Text("应用列表只显示具有桌面启动入口的已安装应用；前台识别依赖 Android 使用情况访问权限；部分系统可能延迟更新应用切换状态。", style = MaterialTheme.typography.bodySmall)
             }
         }
