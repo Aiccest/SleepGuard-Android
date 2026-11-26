@@ -59,6 +59,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private var eyesClosedSince = 0L
     @Volatile private var faceDetectedInWindow = false
     @Volatile private var validFrameAnalyzedInWindow = false
+    @Volatile private var eyeStateDetectedInWindow = false
     private var consecutiveOpenEyeChecks = 0
     private val triggered = AtomicBoolean(false)
     @Volatile private var screenInteractive = true
@@ -301,6 +302,11 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     SystemClock.elapsedRealtime() - stillSince >= PHONE_STILL_REQUIRED_MS) {
                     updateNotification("连续30秒未检测到人脸；判定睡眠并执行保护")
                     if (triggered.compareAndSet(false, true)) performProtection()
+                } else if (result.first && !result.third && screenInteractive && targetAppForeground &&
+                    !triggered.get() && stillSince > 0L &&
+                    SystemClock.elapsedRealtime() - stillSince >= PHONE_STILL_REQUIRED_MS) {
+                    updateNotification("连续30秒检测到人脸但始终无法识别双眼；判定睡眠并执行保护")
+                    if (triggered.compareAndSet(false, true)) performProtection()
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -321,9 +327,10 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         }
     }
 
-    private suspend fun runCameraWindow(): Pair<Boolean, Boolean> {
+    private suspend fun runCameraWindow(): Triple<Boolean, Boolean, Boolean> {
         faceDetectedInWindow = false
         validFrameAnalyzedInWindow = false
+        eyeStateDetectedInWindow = false
         val windowId = ++cameraWindowId
         var analysis: ImageAnalysis? = null
         var provider: ProcessCameraProvider? = null
@@ -350,7 +357,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 resolvedProvider.bindToLifecycle(this@ProtectionService, CameraSelector.DEFAULT_FRONT_CAMERA, imageAnalysis)
             }
             delay(CAMERA_WINDOW_MS)
-            return Pair(faceDetectedInWindow, validFrameAnalyzedInWindow)
+            return Triple(faceDetectedInWindow, validFrameAnalyzedInWindow, eyeStateDetectedInWindow)
         } finally {
             // Invalidate callbacks before detaching the analyzer and camera use case.
             if (cameraWindowId == windowId) cameraWindowId++
@@ -381,6 +388,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     val face = faces.firstOrNull()
                     val left = face?.leftEyeOpenProbability
                     val right = face?.rightEyeOpenProbability
+                    if (left != null && right != null) eyeStateDetectedInWindow = true
                     val closed = left != null && right != null && left < 0.25f && right < 0.25f
                     val now = SystemClock.elapsedRealtime()
                     if (closed) {
