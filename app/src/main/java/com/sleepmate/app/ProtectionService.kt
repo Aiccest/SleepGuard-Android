@@ -66,6 +66,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private var detectionJob: Job? = null
     private var cameraJob: Job? = null
     private var cameraProvider: ProcessCameraProvider? = null
+    @Volatile private var cameraWindowId = 0L
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -323,66 +324,89 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private suspend fun runCameraWindow(): Pair<Boolean, Boolean> {
         faceDetectedInWindow = false
         validFrameAnalyzedInWindow = false
-        val future = ProcessCameraProvider.getInstance(this)
-        val provider = suspendCancellableCoroutine<ProcessCameraProvider> { cont ->
-            future.addListener({
-                try { cont.resume(future.get()) }
-                catch (e: Exception) { cont.resumeWithException(e) }
-            }, cameraExecutor)
-        }
-        cameraProvider = provider
-        val analysis = ImageAnalysis.Builder()
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .build()
-        analysis.setAnalyzer(cameraExecutor) { analyzeFrame(it) }
-        withContext(Dispatchers.Main) {
-            provider.unbindAll()
-            provider.bindToLifecycle(this@ProtectionService, CameraSelector.DEFAULT_FRONT_CAMERA, analysis)
-        }
+        val windowId = ++cameraWindowId
+        var analysis: ImageAnalysis? = null
+        var provider: ProcessCameraProvider? = null
         try {
+            val future = ProcessCameraProvider.getInstance(this)
+            provider = suspendCancellableCoroutine { cont ->
+                future.addListener({
+                    try {
+                        if (cont.isActive) cont.resume(future.get())
+                    } catch (e: Exception) {
+                        if (cont.isActive) cont.resumeWithException(e)
+                    }
+                }, cameraExecutor)
+            }
+            cameraProvider = provider
+            analysis = ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+            analysis.setAnalyzer(cameraExecutor) { proxy -> analyzeFrame(proxy, windowId) }
+            withContext(Dispatchers.Main) {
+                provider.unbindAll()
+                provider.bindToLifecycle(this@ProtectionService, CameraSelector.DEFAULT_FRONT_CAMERA, analysis)
+            }
             delay(CAMERA_WINDOW_MS)
+            return Pair(faceDetectedInWindow, validFrameAnalyzedInWindow)
         } finally {
-            analysis.clearAnalyzer()
-            withContext(Dispatchers.Main) { provider.unbindAll() }
+            // Invalidate callbacks before detaching the analyzer and camera use case.
+            if (cameraWindowId == windowId) cameraWindowId++
+            withContext(NonCancellable + Dispatchers.Main) {
+                analysis?.clearAnalyzer()
+                provider?.unbindAll()
+            }
         }
-        return Pair(faceDetectedInWindow, validFrameAnalyzedInWindow)
     }
 
-    private fun analyzeFrame(proxy: ImageProxy) {
-        val mediaImage = proxy.image
-        if (mediaImage == null || triggered.get() || !screenInteractive || !targetAppForeground) {
+    private fun analyzeFrame(proxy: ImageProxy, windowId: Long) {
+        if (windowId != cameraWindowId || triggered.get() || !screenInteractive || !targetAppForeground) {
             proxy.close()
             return
         }
-        val image = InputImage.fromMediaImage(mediaImage, proxy.imageInfo.rotationDegrees)
-        detector.process(image)
-            .addOnSuccessListener(cameraExecutor) { faces ->
-                if (!screenInteractive || !targetAppForeground || triggered.get()) return@addOnSuccessListener
-                validFrameAnalyzedInWindow = true
-                if (faces.isNotEmpty()) faceDetectedInWindow = true
-                val face = faces.firstOrNull()
-                val left = face?.leftEyeOpenProbability
-                val right = face?.rightEyeOpenProbability
-                val closed = left != null && right != null && left < 0.25f && right < 0.25f
-                val now = SystemClock.elapsedRealtime()
-                if (closed) {
-                    if (eyesClosedSince == 0L) eyesClosedSince = now
-                    val eyesClosedLongEnough = now - eyesClosedSince >= EYES_CLOSED_REQUIRED_MS
-                    val phoneStillLongEnough = stillSince > 0L && now - stillSince >= PHONE_STILL_REQUIRED_MS
-                    val power = getSystemService(Context.POWER_SERVICE) as PowerManager
-                    if (eyesClosedLongEnough && phoneStillLongEnough &&
-                        screenInteractive && power.isInteractive && targetAppForeground &&
-                        triggered.compareAndSet(false, true)) {
-                        scope.launch { performProtection() }
-                    }
-                } else {
-                    eyesClosedSince = 0L
-                }
+        try {
+            val mediaImage = proxy.image
+            if (mediaImage == null) {
+                proxy.close()
+                return
             }
-            .addOnCompleteListener { proxy.close() }
+            val image = InputImage.fromMediaImage(mediaImage, proxy.imageInfo.rotationDegrees)
+            detector.process(image)
+                .addOnSuccessListener(cameraExecutor) { faces ->
+                    if (windowId != cameraWindowId || !screenInteractive || !targetAppForeground || triggered.get()) return@addOnSuccessListener
+                    validFrameAnalyzedInWindow = true
+                    if (faces.isNotEmpty()) faceDetectedInWindow = true
+                    val face = faces.firstOrNull()
+                    val left = face?.leftEyeOpenProbability
+                    val right = face?.rightEyeOpenProbability
+                    val closed = left != null && right != null && left < 0.25f && right < 0.25f
+                    val now = SystemClock.elapsedRealtime()
+                    if (closed) {
+                        if (eyesClosedSince == 0L) eyesClosedSince = now
+                        val eyesClosedLongEnough = now - eyesClosedSince >= EYES_CLOSED_REQUIRED_MS
+                        val phoneStillLongEnough = stillSince > 0L && now - stillSince >= PHONE_STILL_REQUIRED_MS
+                        val power = getSystemService(Context.POWER_SERVICE) as PowerManager
+                        if (eyesClosedLongEnough && phoneStillLongEnough &&
+                            screenInteractive && power.isInteractive && targetAppForeground &&
+                            triggered.compareAndSet(false, true)) {
+                            scope.launch { performProtection() }
+                        }
+                    } else {
+                        eyesClosedSince = 0L
+                    }
+                }
+                .addOnCompleteListener { proxy.close() }
+        } catch (_: Exception) {
+            // InputImage creation or detector submission can fail before a Task exists.
+            proxy.close()
+        }
     }
 
     private suspend fun performProtection() {
+        val currentJob = currentCoroutineContext()[Job]
+        cameraJob?.takeIf { it !== currentJob }?.cancel()
+        val activeWindowId = cameraWindowId
+        cameraWindowId = activeWindowId + 1L
         val power = getSystemService(Context.POWER_SERVICE) as PowerManager
         if (!screenInteractive || !power.isInteractive || !targetAppForeground) {
             triggered.set(false)
@@ -391,7 +415,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         updateNotification("确认符合睡眠条件；正在锁定屏幕")
         detectionJob?.cancel()
         unregisterMotionSensor()
-        withContext(Dispatchers.Main) { cameraProvider?.unbindAll() }
+        withContext(NonCancellable + Dispatchers.Main) { cameraProvider?.unbindAll() }
         if (!screenInteractive || !power.isInteractive || !targetAppForeground) {
             triggered.set(false)
             return
@@ -415,7 +439,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         scope.cancel()
         unregisterMotionSensor()
         try { unregisterReceiver(screenReceiver) } catch (_: Exception) { }
-        cameraProvider?.unbindAll()
+        cameraWindowId++
+        scope.launch(NonCancellable + Dispatchers.Main) { cameraProvider?.unbindAll() }
         detector.close()
         cameraExecutor.shutdown()
         super.onDestroy()
