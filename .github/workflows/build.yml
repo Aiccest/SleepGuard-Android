@@ -3,7 +3,7 @@ name: Build SleepMate debug APK
 on:
   workflow_dispatch:
   push:
-    branches: [ "main", "feature/usage-access-sleepmate-redesign" ]
+    branches: [ "main", "feature/usage-access-sleepmate-redesign", "feature/power-saving-optimization" ]
 
 jobs:
   build:
