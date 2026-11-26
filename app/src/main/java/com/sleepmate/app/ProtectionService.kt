@@ -46,7 +46,8 @@ import kotlin.coroutines.resumeWithException
 class ProtectionService : LifecycleService(), SensorEventListener {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
-    private lateinit var detector: FaceDetector
+    @Volatile private var detector: FaceDetector? = null
+    private val detectorLock = Any()
     private lateinit var sensorManager: SensorManager
     private lateinit var usageStatsManager: UsageStatsManager
 
@@ -100,12 +101,6 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        val options = FaceDetectorOptions.Builder()
-            .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
-            .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
-            .enableTracking()
-            .build()
-        detector = FaceDetection.getClient(options)
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         screenInteractive = (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
@@ -152,7 +147,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         foregroundMonitorJob = scope.launch {
             while (isActive) {
                 refreshForegroundState()
-                delay(2000L)
+                delay(3000L)
             }
         }
     }
@@ -370,6 +365,17 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         }
     }
 
+    private fun getOrCreateFaceDetector(): FaceDetector = synchronized(detectorLock) {
+        detector ?: run {
+            val options = FaceDetectorOptions.Builder()
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
+                .enableTracking()
+                .build()
+            FaceDetection.getClient(options).also { detector = it }
+        }
+    }
+
     private fun analyzeFrame(proxy: ImageProxy, windowId: Long) {
         if (windowId != cameraWindowId || triggered.get() || !screenInteractive || !targetAppForeground) {
             proxy.close()
@@ -382,7 +388,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 return
             }
             val image = InputImage.fromMediaImage(mediaImage, proxy.imageInfo.rotationDegrees)
-            detector.process(image)
+            getOrCreateFaceDetector().process(image)
                 .addOnSuccessListener(cameraExecutor) { faces ->
                     if (windowId != cameraWindowId || !screenInteractive || !targetAppForeground || triggered.get()) return@addOnSuccessListener
                     validFrameAnalyzedInWindow = true
@@ -525,7 +531,10 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         try { unregisterReceiver(screenReceiver) } catch (_: Exception) { }
         cameraWindowId++
         cameraProvider?.unbindAll()
-        detector.close()
+        synchronized(detectorLock) {
+            detector?.close()
+            detector = null
+        }
         cameraExecutor.shutdown()
         super.onDestroy()
     }
