@@ -1,9 +1,9 @@
-name: Build SleepMate debug APK
+name: Build SleepMate APKs
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "main", "feature/usage-access-sleepmate-redesign", "feature/power-saving-optimization" ]
+    branches: [ "main", "feature/usage-access-sleepmate-redesign", "feature/power-saving-optimization", "chore/release-privacy-cleanup" ]
 
 jobs:
   build:
@@ -30,13 +30,33 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build debug APK
-        run: gradle --no-daemon assembleDebug
+      - name: Prepare optional release signing
+        if: ${{ secrets.SLEEPMATE_KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SLEEPMATE_KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/sleepmate-release.jks"
 
-      - name: Upload APK
+      - name: Build debug and release APKs
+        env:
+          SLEEPMATE_KEYSTORE_PATH: ${{ secrets.SLEEPMATE_KEYSTORE_BASE64 != '' && format('{0}/sleepmate-release.jks', runner.temp) || '' }}
+          SLEEPMATE_STORE_PASSWORD: ${{ secrets.SLEEPMATE_STORE_PASSWORD }}
+          SLEEPMATE_KEY_ALIAS: ${{ secrets.SLEEPMATE_KEY_ALIAS }}
+          SLEEPMATE_KEY_PASSWORD: ${{ secrets.SLEEPMATE_KEY_PASSWORD }}
+        run: gradle --no-daemon assembleDebug assembleRelease
+
+      - name: Package release APK
+        run: |
+          mkdir -p dist
+          zip -j dist/SleepMate-release-apk.zip app/build/outputs/apk/release/app-release.apk
+
+      - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: SleepMate-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: SleepMate-APKs
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/release/app-release.apk
+            dist/SleepMate-release-apk.zip
           if-no-files-found: error
           retention-days: 14
