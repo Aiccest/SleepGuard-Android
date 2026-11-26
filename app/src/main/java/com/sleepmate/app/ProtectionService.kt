@@ -49,6 +49,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     private var targetAppForeground = false
     private var lastForegroundPackage: String? = null
+    private var lastUsageEventQueryAt = 0L
     private var foregroundMonitorJob: Job? = null
     private var sensorRegistered = false
     private var lastActivityAt = 0L
@@ -141,7 +142,10 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private fun startForegroundMonitor() {
         if (foregroundMonitorJob?.isActive == true) return
         foregroundMonitorJob = scope.launch {
-            while (isActive) { refreshForegroundState(); delay(1000L) }
+            while (isActive) {
+                refreshForegroundState()
+                delay(2000L)
+            }
         }
     }
 
@@ -150,20 +154,26 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         val selected = MediaAppPreferences.getSelectedPackages(this)
         if (selected.isEmpty()) { setTargetAppForeground(false); return }
         val now = System.currentTimeMillis()
-        // On first run, replay a longer event window to reconstruct the latest foreground
-        // package. UsageStats.lastTimeUsed is not proof that an app is currently foreground.
-        val eventWindowStart = if (lastForegroundPackage == null) now - 24 * 60 * 60_000L else now - 15000L
+        // Initialize from a short recent window; thereafter query incrementally with
+        // a small overlap so delayed UsageEvents are less likely to be missed.
+        val eventWindowStart = if (lastUsageEventQueryAt == 0L) {
+            now - INITIAL_USAGE_EVENT_WINDOW_MS
+        } else {
+            (lastUsageEventQueryAt - USAGE_EVENT_OVERLAP_MS).coerceAtLeast(0L)
+        }
         val events = usageStatsManager.queryEvents(eventWindowStart, now)
         val event = UsageEvents.Event()
         var foreground = lastForegroundPackage
         while (events.hasNextEvent()) {
             events.getNextEvent(event)
             when (event.eventType) {
-                UsageEvents.Event.MOVE_TO_FOREGROUND, UsageEvents.Event.ACTIVITY_RESUMED -> foreground = event.packageName
+                UsageEvents.Event.MOVE_TO_FOREGROUND, UsageEvents.Event.ACTIVITY_RESUMED ->
+                    foreground = event.packageName
                 UsageEvents.Event.MOVE_TO_BACKGROUND, UsageEvents.Event.ACTIVITY_PAUSED, UsageEvents.Event.ACTIVITY_STOPPED ->
                     if (foreground == event.packageName) foreground = null
             }
         }
+        lastUsageEventQueryAt = now
         lastForegroundPackage = foreground
         setTargetAppForeground(foreground in selected)
     }
@@ -438,6 +448,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         private const val EYES_CLOSED_REQUIRED_MS = 3000L
         private const val PHONE_STILL_REQUIRED_MS = 8000L
         private const val NO_ACTIVITY_REQUIRED_MS = 5 * 60_000L
+        private const val INITIAL_USAGE_EVENT_WINDOW_MS = 10_000L
+        private const val USAGE_EVENT_OVERLAP_MS = 5_000L
         private const val CAMERA_WINDOW_MS = 30_000L
         private const val MOVEMENT_THRESHOLD = 1.0f
         private const val CHANNEL_ID = "sleepguard_protection"
