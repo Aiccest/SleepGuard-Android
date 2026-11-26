@@ -456,6 +456,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 SleepMateLog.add(this, "已向默认桌面发送明确组件跳转请求；未抛异常（不代表系统已完成切换）")
                 updateNotification("已发送桌面跳转请求；正在核实前台")
                 scope.launch {
+                    // Check at elapsed offsets from the original request, not cumulative delays.
                     var previousCheckAt = 0L
                     for (checkAtMs in listOf(500L, 1500L, 3000L)) {
                         delay(checkAtMs - previousCheckAt)
