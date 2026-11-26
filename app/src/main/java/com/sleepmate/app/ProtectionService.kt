@@ -125,7 +125,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             return START_NOT_STICKY
         }
         running.value = true
-        startForeground(NOTIFICATION_ID, notification("睡眠保护服务已启动；等待所选应用进入前台"))
+        startForeground(NOTIFICATION_ID, notification("睡眠保护已启动，正在等待监测条件"))
         if (intent?.action == ACTION_SELECTION_CHANGED) {
             refreshForegroundState()
             return START_STICKY
@@ -205,7 +205,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             triggered.set(false)
             if (screenInteractive) {
                 registerMotionSensor()
-                updateNotification("已进入所选应用；活动传感器已启动，正在等待睡眠检测条件。")
+                updateNotification("已进入所选应用；开始等待睡眠检测条件")
                 scheduleDetection(NO_ACTIVITY_REQUIRED_MS)
             }
         } else {
@@ -225,7 +225,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         lastActivityAt = SystemClock.elapsedRealtime()
         stillSince = 0L
         registerMotionSensor()
-        updateNotification("屏幕已亮起且所选应用仍在前台；活动传感器已启动，正在等待睡眠检测条件。")
+        updateNotification("屏幕已亮起且所选应用仍在前台；重新等待睡眠检测条件")
         scheduleDetection(NO_ACTIVITY_REQUIRED_MS)
     }
 
