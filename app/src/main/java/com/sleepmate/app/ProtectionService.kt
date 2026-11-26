@@ -37,6 +37,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.LinkedHashSet
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -50,6 +51,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private var targetAppForeground = false
     private var lastForegroundPackage: String? = null
     private var lastUsageEventQueryAt = 0L
+    private val processedUsageEvents = LinkedHashSet<String>()
     private var foregroundMonitorJob: Job? = null
     private var sensorRegistered = false
     private var lastActivityAt = 0L
@@ -69,6 +71,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     screenInteractive = false
+                    stopForegroundMonitor()
                     triggered.set(false)
                     detectionJob?.cancel()
                     detectionJob = null
@@ -82,6 +85,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     screenInteractive = true
+                    if (hasUsageAccess()) startForegroundMonitor()
                     refreshForegroundState()
                     resumeMonitoringIfEligible()
                 }
@@ -140,7 +144,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     private fun startForegroundMonitor() {
-        if (foregroundMonitorJob?.isActive == true) return
+        if (!screenInteractive || foregroundMonitorJob?.isActive == true) return
         foregroundMonitorJob = scope.launch {
             while (isActive) {
                 refreshForegroundState()
@@ -149,7 +153,13 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         }
     }
 
+    private fun stopForegroundMonitor() {
+        foregroundMonitorJob?.cancel()
+        foregroundMonitorJob = null
+    }
+
     private fun refreshForegroundState() {
+        if (!screenInteractive) return
         if (!hasUsageAccess()) { setTargetAppForeground(false); return }
         val selected = MediaAppPreferences.getSelectedPackages(this)
         if (selected.isEmpty()) { setTargetAppForeground(false); return }
@@ -166,6 +176,12 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         var foreground = lastForegroundPackage
         while (events.hasNextEvent()) {
             events.getNextEvent(event)
+            val eventKey = "${event.timeStamp}:${event.eventType}:${event.packageName}"
+            if (!processedUsageEvents.add(eventKey)) continue
+            if (processedUsageEvents.size > MAX_REMEMBERED_USAGE_EVENTS) {
+                val oldest = processedUsageEvents.firstOrNull()
+                if (oldest != null) processedUsageEvents.remove(oldest)
+            }
             when (event.eventType) {
                 UsageEvents.Event.MOVE_TO_FOREGROUND, UsageEvents.Event.ACTIVITY_RESUMED ->
                     foreground = event.packageName
@@ -450,6 +466,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         private const val NO_ACTIVITY_REQUIRED_MS = 5 * 60_000L
         private const val INITIAL_USAGE_EVENT_WINDOW_MS = 10_000L
         private const val USAGE_EVENT_OVERLAP_MS = 5_000L
+        private const val MAX_REMEMBERED_USAGE_EVENTS = 128
         private const val CAMERA_WINDOW_MS = 30_000L
         private const val MOVEMENT_THRESHOLD = 1.0f
         private const val CHANNEL_ID = "sleepguard_protection"
