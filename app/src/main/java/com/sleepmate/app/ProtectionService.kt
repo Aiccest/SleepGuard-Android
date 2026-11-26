@@ -329,7 +329,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         var provider: ProcessCameraProvider? = null
         try {
             val future = ProcessCameraProvider.getInstance(this)
-            provider = suspendCancellableCoroutine { cont ->
+            val resolvedProvider = suspendCancellableCoroutine<ProcessCameraProvider> { cont ->
                 future.addListener({
                     try {
                         if (cont.isActive) cont.resume(future.get())
@@ -338,14 +338,16 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     }
                 }, cameraExecutor)
             }
-            cameraProvider = provider
-            analysis = ImageAnalysis.Builder()
+            provider = resolvedProvider
+            cameraProvider = resolvedProvider
+            val imageAnalysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
-            analysis.setAnalyzer(cameraExecutor) { proxy -> analyzeFrame(proxy, windowId) }
+            analysis = imageAnalysis
+            imageAnalysis.setAnalyzer(cameraExecutor) { proxy -> analyzeFrame(proxy, windowId) }
             withContext(Dispatchers.Main) {
-                provider.unbindAll()
-                provider.bindToLifecycle(this@ProtectionService, CameraSelector.DEFAULT_FRONT_CAMERA, analysis)
+                resolvedProvider.unbindAll()
+                resolvedProvider.bindToLifecycle(this@ProtectionService, CameraSelector.DEFAULT_FRONT_CAMERA, imageAnalysis)
             }
             delay(CAMERA_WINDOW_MS)
             return Pair(faceDetectedInWindow, validFrameAnalyzedInWindow)
@@ -440,7 +442,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         unregisterMotionSensor()
         try { unregisterReceiver(screenReceiver) } catch (_: Exception) { }
         cameraWindowId++
-        scope.launch(NonCancellable + Dispatchers.Main) { cameraProvider?.unbindAll() }
+        cameraProvider?.unbindAll()
         detector.close()
         cameraExecutor.shutdown()
         super.onDestroy()
