@@ -22,6 +22,7 @@ import android.app.usage.UsageStatsManager
 import android.os.Process
 import android.os.PowerManager
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.Log
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -435,6 +436,14 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         if (dpm.isAdminActive(ComponentName(this, SleepGuardAdminReceiver::class.java))) {
             dpm.lockNow()
         } else {
+            val overlayAllowed = Settings.canDrawOverlays(this)
+            Log.i(TAG, "HOME_DIAG: SYSTEM_ALERT_WINDOW granted=$overlayAllowed")
+            SleepMateLog.add(this, "悬浮窗特殊权限（SYSTEM_ALERT_WINDOW）已授权=$overlayAllowed")
+            if (!overlayAllowed) {
+                updateNotification("未授权悬浮窗特殊权限；后台返回桌面可能被系统拦截")
+            } else {
+                updateNotification("已授权悬浮窗特殊权限；正在尝试返回桌面")
+            }
             val homeIntent = Intent(Intent.ACTION_MAIN)
                 .addCategory(Intent.CATEGORY_HOME)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
