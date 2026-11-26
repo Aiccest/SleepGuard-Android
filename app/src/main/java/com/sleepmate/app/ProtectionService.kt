@@ -3,6 +3,7 @@ package com.sleepmate.app
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.admin.DevicePolicyManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
@@ -13,14 +14,16 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.media.session.MediaController
-import android.media.session.MediaSessionManager
-import android.media.session.PlaybackState
 import android.os.Build
 import android.os.IBinder
+import android.app.AppOpsManager
+import android.app.usage.UsageEvents
+import android.app.usage.UsageStatsManager
+import android.os.Process
 import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
+import android.util.Log
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -36,6 +39,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.LinkedHashSet
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -44,13 +48,20 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private lateinit var detector: FaceDetector
     private lateinit var sensorManager: SensorManager
-    private lateinit var mediaSessionManager: MediaSessionManager
+    private lateinit var usageStatsManager: UsageStatsManager
 
-    private var mediaPlaying = false
+    private var targetAppForeground = false
+    private var lastForegroundPackage: String? = null
+    private var lastUsageEventQueryAt = 0L
+    private val processedUsageEvents = LinkedHashSet<String>()
+    private var foregroundMonitorJob: Job? = null
     private var sensorRegistered = false
     private var lastActivityAt = 0L
     private var stillSince = 0L
     private var eyesClosedSince = 0L
+    @Volatile private var faceDetectedInWindow = false
+    @Volatile private var validFrameAnalyzedInWindow = false
+    @Volatile private var eyeStateDetectedInWindow = false
     private var consecutiveOpenEyeChecks = 0
     private val triggered = AtomicBoolean(false)
     @Volatile private var screenInteractive = true
@@ -58,24 +69,13 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private var detectionJob: Job? = null
     private var cameraJob: Job? = null
     private var cameraProvider: ProcessCameraProvider? = null
-    private val controllerCallbacks = mutableMapOf<MediaController, MediaController.Callback>()
-
-    private val activeSessionsListener =
-        MediaSessionManager.OnActiveSessionsChangedListener { controllers ->
-            updateControllers(controllers.orEmpty())
-        }
-
-    private val playbackCallback = object : MediaController.Callback() {
-        override fun onPlaybackStateChanged(state: PlaybackState?) {
-            refreshPlaybackState()
-        }
-    }
-
+    @Volatile private var cameraWindowId = 0L
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     screenInteractive = false
+                    stopForegroundMonitor()
                     triggered.set(false)
                     detectionJob?.cancel()
                     detectionJob = null
@@ -89,7 +89,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     screenInteractive = true
-                    refreshPlaybackState()
+                    if (hasUsageAccess()) startForegroundMonitor()
+                    refreshForegroundState()
                     resumeMonitoringIfEligible()
                 }
             }
@@ -106,7 +107,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             .build()
         detector = FaceDetection.getClient(options)
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+        usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         screenInteractive = (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
@@ -126,72 +127,88 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             return START_NOT_STICKY
         }
         running.value = true
-        startForeground(NOTIFICATION_ID, notification("低功耗保护已启动"))
+        startForeground(NOTIFICATION_ID, notification("睡眠保护已启动，正在等待监测条件"))
         if (intent?.action == ACTION_SELECTION_CHANGED) {
-            refreshPlaybackState()
+            refreshForegroundState()
             return START_STICKY
         }
-        if (hasMediaAccess()) {
-            try {
-                mediaSessionManager.addOnActiveSessionsChangedListener(
-                    activeSessionsListener,
-                    ComponentName(this, SleepGuardNotificationListener::class.java)
-                )
-                updateControllers(mediaSessionManager.getActiveSessions(
-                    ComponentName(this, SleepGuardNotificationListener::class.java)
-                ))
-            } catch (_: SecurityException) {
-                updateNotification("请开启媒体通知访问权限")
-            }
-        } else {
-            updateNotification("请开启媒体通知访问权限，才能识别媒体播放状态")
+        if (!hasUsageAccess()) {
+            updateNotification("请开启使用情况访问权限")
+            return START_STICKY
         }
+        startForegroundMonitor()
+        refreshForegroundState()
         return START_STICKY
     }
 
-    private fun hasMediaAccess(): Boolean =
-        Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
-            ?.contains(packageName) == true
-
-    private fun updateControllers(controllers: List<MediaController>) {
-        controllerCallbacks.forEach { (controller, callback) ->
-            try { controller.unregisterCallback(callback) } catch (_: Exception) { }
-        }
-        controllerCallbacks.clear()
-        controllers.forEach { controller ->
-            controller.registerCallback(playbackCallback)
-            controllerCallbacks[controller] = playbackCallback
-        }
-        refreshPlaybackState()
+    private fun hasUsageAccess(): Boolean {
+        val ops = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+        return try { ops.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName) == AppOpsManager.MODE_ALLOWED }
+        catch (_: Exception) { false }
     }
 
-    private fun refreshPlaybackState() {
-        val selectedPackages = MediaAppPreferences.getSelectedPackages(this)
-        if (selectedPackages.isEmpty()) {
-            setMediaPlaying(false)
-            updateNotification("尚未选择媒体应用；摄像头保持关闭")
-            return
+    private fun startForegroundMonitor() {
+        if (!screenInteractive || foregroundMonitorJob?.isActive == true) return
+        foregroundMonitorJob = scope.launch {
+            while (isActive) {
+                refreshForegroundState()
+                delay(2000L)
+            }
         }
-        val playing = controllerCallbacks.keys.any { controller ->
-            val state = controller.playbackState?.state
-            controller.packageName in selectedPackages &&
-                (state == PlaybackState.STATE_PLAYING || state == PlaybackState.STATE_BUFFERING)
-        }
-        setMediaPlaying(playing)
     }
 
-    private fun setMediaPlaying(playing: Boolean) {
-        if (mediaPlaying == playing) return
-        mediaPlaying = playing
-        if (playing) {
+    private fun stopForegroundMonitor() {
+        foregroundMonitorJob?.cancel()
+        foregroundMonitorJob = null
+    }
+
+    private fun refreshForegroundState() {
+        if (!screenInteractive) return
+        if (!hasUsageAccess()) { setTargetAppForeground(false); return }
+        val selected = MediaAppPreferences.getSelectedPackages(this)
+        if (selected.isEmpty()) { setTargetAppForeground(false); return }
+        val now = System.currentTimeMillis()
+        // Initialize from a short recent window; thereafter query incrementally with
+        // a small overlap so delayed UsageEvents are less likely to be missed.
+        val eventWindowStart = if (lastUsageEventQueryAt == 0L) {
+            now - INITIAL_USAGE_EVENT_WINDOW_MS
+        } else {
+            (lastUsageEventQueryAt - USAGE_EVENT_OVERLAP_MS).coerceAtLeast(0L)
+        }
+        val events = usageStatsManager.queryEvents(eventWindowStart, now)
+        val event = UsageEvents.Event()
+        var foreground = lastForegroundPackage
+        while (events.hasNextEvent()) {
+            events.getNextEvent(event)
+            val eventKey = "${event.timeStamp}:${event.eventType}:${event.packageName}"
+            if (!processedUsageEvents.add(eventKey)) continue
+            if (processedUsageEvents.size > MAX_REMEMBERED_USAGE_EVENTS) {
+                val oldest = processedUsageEvents.firstOrNull()
+                if (oldest != null) processedUsageEvents.remove(oldest)
+            }
+            when (event.eventType) {
+                UsageEvents.Event.MOVE_TO_FOREGROUND, UsageEvents.Event.ACTIVITY_RESUMED ->
+                    foreground = event.packageName
+                UsageEvents.Event.MOVE_TO_BACKGROUND, UsageEvents.Event.ACTIVITY_PAUSED, UsageEvents.Event.ACTIVITY_STOPPED ->
+                    if (foreground == event.packageName) foreground = null
+            }
+        }
+        lastUsageEventQueryAt = now
+        lastForegroundPackage = foreground
+        setTargetAppForeground(foreground in selected)
+    }
+
+    private fun setTargetAppForeground(active: Boolean) {
+        if (targetAppForeground == active) return
+        targetAppForeground = active
+        if (active) {
             lastActivityAt = SystemClock.elapsedRealtime()
             stillSince = 0L
-            if (screenInteractive && !triggered.get()) {
+            triggered.set(false)
+            if (screenInteractive) {
                 registerMotionSensor()
-                updateNotification("检测到媒体播放；进入低功耗等待")
+                updateNotification("已进入所选应用；开始等待睡眠检测条件")
                 scheduleDetection(NO_ACTIVITY_REQUIRED_MS)
-            } else {
-                updateNotification("屏幕关闭；睡眠检测保持停止")
             }
         } else {
             detectionJob?.cancel()
@@ -201,22 +218,16 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             triggered.set(false)
             eyesClosedSince = 0L
             consecutiveOpenEyeChecks = 0
-            val hasSelection = MediaAppPreferences.getSelectedPackages(this).isNotEmpty()
-            updateNotification(
-                if (hasSelection) "所选应用当前没有媒体播放；摄像头保持关闭"
-                else "尚未选择媒体应用；摄像头保持关闭"
-            )
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            updateNotification("已离开所选应用，睡眠检测已暂停")
         }
     }
 
     private fun resumeMonitoringIfEligible() {
-        if (!screenInteractive || !mediaPlaying || triggered.get()) return
+        if (!screenInteractive || !targetAppForeground || triggered.get()) return
         lastActivityAt = SystemClock.elapsedRealtime()
         stillSince = 0L
         registerMotionSensor()
-        updateNotification("屏幕已亮起且媒体仍在播放；重新开始低功耗等待")
+        updateNotification("屏幕已亮起且所选应用仍在前台；重新等待睡眠检测条件")
         scheduleDetection(NO_ACTIVITY_REQUIRED_MS)
     }
 
@@ -235,7 +246,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        if (!screenInteractive || !mediaPlaying || triggered.get() ||
+        if (!screenInteractive || !targetAppForeground || triggered.get() ||
             event?.sensor?.type != Sensor.TYPE_ACCELEROMETER) return
         val magnitude = kotlin.math.sqrt(
             event.values[0] * event.values[0] +
@@ -250,7 +261,6 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             cameraJob?.cancel()
             scope.launch { withContext(Dispatchers.Main) { cameraProvider?.unbindAll() } }
             scheduleDetection(NO_ACTIVITY_REQUIRED_MS)
-            updateNotification("检测到设备活动；重新计算空闲时间")
         } else if (stillSince == 0L) {
             stillSince = now
         }
@@ -258,10 +268,10 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     private fun scheduleDetection(delayMs: Long) {
         detectionJob?.cancel()
-        if (!screenInteractive || !mediaPlaying || triggered.get()) return
+        if (!screenInteractive || !targetAppForeground || triggered.get()) return
         detectionJob = scope.launch {
             delay(delayMs.coerceAtLeast(0L))
-            if (!screenInteractive || !mediaPlaying || triggered.get()) return@launch
+            if (!screenInteractive || !targetAppForeground || triggered.get()) return@launch
             val now = SystemClock.elapsedRealtime()
             val idleFor = now - lastActivityAt
             if (idleFor < NO_ACTIVITY_REQUIRED_MS) {
@@ -281,18 +291,31 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     private fun startCameraCheck() {
-        if (cameraJob?.isActive == true || !screenInteractive || !mediaPlaying || triggered.get()) return
+        if (cameraJob?.isActive == true || !screenInteractive || !targetAppForeground || triggered.get()) return
         cameraJob = scope.launch {
             eyesClosedSince = 0L
             updateNotification("正在进行短时睡眠确认")
             try {
-                runCameraWindow()
+                val result = runCameraWindow()
+                if (!result.second) {
+                    updateNotification("摄像头未取得有效画面；本轮不作睡眠判断")
+                } else if (!result.first && screenInteractive && targetAppForeground &&
+                    !triggered.get() && stillSince > 0L &&
+                    SystemClock.elapsedRealtime() - stillSince >= PHONE_STILL_REQUIRED_MS) {
+                    updateNotification("连续30秒未检测到人脸；判定睡眠并执行保护")
+                    if (triggered.compareAndSet(false, true)) performProtection()
+                } else if (result.first && !result.third && screenInteractive && targetAppForeground &&
+                    !triggered.get() && stillSince > 0L &&
+                    SystemClock.elapsedRealtime() - stillSince >= PHONE_STILL_REQUIRED_MS) {
+                    updateNotification("连续30秒检测到人脸但始终无法识别双眼；判定睡眠并执行保护")
+                    if (triggered.compareAndSet(false, true)) performProtection()
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
                 updateNotification("本轮摄像头检测未能启动；稍后重试")
             }
-            if (!triggered.get() && screenInteractive && mediaPlaying && isActive) {
+            if (!triggered.get() && screenInteractive && targetAppForeground && isActive) {
                 consecutiveOpenEyeChecks = (consecutiveOpenEyeChecks + 1).coerceAtMost(4)
                 val minutes = when (consecutiveOpenEyeChecks) {
                     1 -> 15
@@ -306,83 +329,187 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         }
     }
 
-    private suspend fun runCameraWindow() {
-        val future = ProcessCameraProvider.getInstance(this)
-        val provider = suspendCancellableCoroutine<ProcessCameraProvider> { cont ->
-            future.addListener({
-                try { cont.resume(future.get()) }
-                catch (e: Exception) { cont.resumeWithException(e) }
-            }, cameraExecutor)
-        }
-        cameraProvider = provider
-        val analysis = ImageAnalysis.Builder()
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .build()
-        analysis.setAnalyzer(cameraExecutor) { analyzeFrame(it) }
-        withContext(Dispatchers.Main) {
-            provider.unbindAll()
-            provider.bindToLifecycle(this@ProtectionService, CameraSelector.DEFAULT_FRONT_CAMERA, analysis)
-        }
+    private suspend fun runCameraWindow(): Triple<Boolean, Boolean, Boolean> {
+        faceDetectedInWindow = false
+        validFrameAnalyzedInWindow = false
+        eyeStateDetectedInWindow = false
+        val windowId = ++cameraWindowId
+        var analysis: ImageAnalysis? = null
+        var provider: ProcessCameraProvider? = null
         try {
+            val future = ProcessCameraProvider.getInstance(this)
+            val resolvedProvider = suspendCancellableCoroutine<ProcessCameraProvider> { cont ->
+                future.addListener({
+                    try {
+                        if (cont.isActive) cont.resume(future.get())
+                    } catch (e: Exception) {
+                        if (cont.isActive) cont.resumeWithException(e)
+                    }
+                }, cameraExecutor)
+            }
+            provider = resolvedProvider
+            cameraProvider = resolvedProvider
+            val imageAnalysis = ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+            analysis = imageAnalysis
+            imageAnalysis.setAnalyzer(cameraExecutor) { proxy -> analyzeFrame(proxy, windowId) }
+            withContext(Dispatchers.Main) {
+                resolvedProvider.unbindAll()
+                resolvedProvider.bindToLifecycle(this@ProtectionService, CameraSelector.DEFAULT_FRONT_CAMERA, imageAnalysis)
+            }
             delay(CAMERA_WINDOW_MS)
+            return Triple(faceDetectedInWindow, validFrameAnalyzedInWindow, eyeStateDetectedInWindow)
         } finally {
-            analysis.clearAnalyzer()
-            withContext(Dispatchers.Main) { provider.unbindAll() }
+            // Invalidate callbacks before detaching the analyzer and camera use case.
+            if (cameraWindowId == windowId) cameraWindowId++
+            withContext(NonCancellable + Dispatchers.Main) {
+                analysis?.clearAnalyzer()
+                provider?.unbindAll()
+            }
         }
     }
 
-    private fun analyzeFrame(proxy: ImageProxy) {
-        val mediaImage = proxy.image
-        if (mediaImage == null || triggered.get() || !screenInteractive || !mediaPlaying) {
+    private fun analyzeFrame(proxy: ImageProxy, windowId: Long) {
+        if (windowId != cameraWindowId || triggered.get() || !screenInteractive || !targetAppForeground) {
             proxy.close()
             return
         }
-        val image = InputImage.fromMediaImage(mediaImage, proxy.imageInfo.rotationDegrees)
-        detector.process(image)
-            .addOnSuccessListener(cameraExecutor) { faces ->
-                if (!screenInteractive || !mediaPlaying || triggered.get()) return@addOnSuccessListener
-                val face = faces.firstOrNull()
-                val left = face?.leftEyeOpenProbability
-                val right = face?.rightEyeOpenProbability
-                val closed = left != null && right != null && left < 0.25f && right < 0.25f
-                val now = SystemClock.elapsedRealtime()
-                if (closed) {
-                    if (eyesClosedSince == 0L) eyesClosedSince = now
-                    val eyesClosedLongEnough = now - eyesClosedSince >= EYES_CLOSED_REQUIRED_MS
-                    val phoneStillLongEnough = stillSince > 0L && now - stillSince >= PHONE_STILL_REQUIRED_MS
-                    val power = getSystemService(Context.POWER_SERVICE) as PowerManager
-                    if (eyesClosedLongEnough && phoneStillLongEnough &&
-                        screenInteractive && power.isInteractive && mediaPlaying &&
-                        triggered.compareAndSet(false, true)) {
-                        scope.launch { performProtection() }
-                    }
-                } else {
-                    eyesClosedSince = 0L
-                }
+        try {
+            val mediaImage = proxy.image
+            if (mediaImage == null) {
+                proxy.close()
+                return
             }
-            .addOnCompleteListener { proxy.close() }
+            val image = InputImage.fromMediaImage(mediaImage, proxy.imageInfo.rotationDegrees)
+            detector.process(image)
+                .addOnSuccessListener(cameraExecutor) { faces ->
+                    if (windowId != cameraWindowId || !screenInteractive || !targetAppForeground || triggered.get()) return@addOnSuccessListener
+                    validFrameAnalyzedInWindow = true
+                    if (faces.isNotEmpty()) faceDetectedInWindow = true
+                    val face = faces.firstOrNull()
+                    val left = face?.leftEyeOpenProbability
+                    val right = face?.rightEyeOpenProbability
+                    if (left != null && right != null) eyeStateDetectedInWindow = true
+                    val closed = left != null && right != null && left < 0.25f && right < 0.25f
+                    val now = SystemClock.elapsedRealtime()
+                    if (closed) {
+                        if (eyesClosedSince == 0L) eyesClosedSince = now
+                        val eyesClosedLongEnough = now - eyesClosedSince >= EYES_CLOSED_REQUIRED_MS
+                        val phoneStillLongEnough = stillSince > 0L && now - stillSince >= PHONE_STILL_REQUIRED_MS
+                        val power = getSystemService(Context.POWER_SERVICE) as PowerManager
+                        if (eyesClosedLongEnough && phoneStillLongEnough &&
+                            screenInteractive && power.isInteractive && targetAppForeground &&
+                            triggered.compareAndSet(false, true)) {
+                            scope.launch { performProtection() }
+                        }
+                    } else {
+                        eyesClosedSince = 0L
+                    }
+                }
+                .addOnCompleteListener { proxy.close() }
+        } catch (_: Exception) {
+            // InputImage creation or detector submission can fail before a Task exists.
+            proxy.close()
+        }
     }
 
     private suspend fun performProtection() {
+        val currentJob = currentCoroutineContext()[Job]
+        cameraJob?.takeIf { it !== currentJob }?.cancel()
+        val activeWindowId = cameraWindowId
+        cameraWindowId = activeWindowId + 1L
         val power = getSystemService(Context.POWER_SERVICE) as PowerManager
-        if (!screenInteractive || !power.isInteractive || !mediaPlaying) {
+        if (!screenInteractive || !power.isInteractive || !targetAppForeground) {
             triggered.set(false)
             return
         }
         updateNotification("确认符合睡眠条件；正在锁定屏幕")
         detectionJob?.cancel()
         unregisterMotionSensor()
-        withContext(Dispatchers.Main) { cameraProvider?.unbindAll() }
-        if (!screenInteractive || !power.isInteractive || !mediaPlaying) {
+        withContext(NonCancellable + Dispatchers.Main) { cameraProvider?.unbindAll() }
+        if (!screenInteractive || !power.isInteractive || !targetAppForeground) {
             triggered.set(false)
             return
         }
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-        if (dpm.isAdminActive(ComponentName(this, SleepGuardAdminReceiver::class.java))) {
-            dpm.lockNow()
-        } else {
-            updateNotification("未激活设备管理员，无法自动锁屏")
-            triggered.set(false)
+        val adminActive = dpm.isAdminActive(ComponentName(this, SleepGuardAdminReceiver::class.java))
+        val overlayAllowed = Settings.canDrawOverlays(this)
+        Log.i(TAG, "HOME_DIAG: SYSTEM_ALERT_WINDOW granted=$overlayAllowed")
+        SleepMateLog.add(this, "悬浮窗特殊权限（SYSTEM_ALERT_WINDOW）已授权=$overlayAllowed")
+        Log.i(TAG, "HOME_DIAG: sleep confirmed; adminActive=$adminActive; currentForeground=$lastForegroundPackage; targetForeground=$targetAppForeground")
+        SleepMateLog.add(this, "确认睡眠；设备管理员已启用=$adminActive；当前前台=$lastForegroundPackage；目标应用前台=$targetAppForeground")
+
+        val homeIntent = Intent(Intent.ACTION_MAIN)
+            .addCategory(Intent.CATEGORY_HOME)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+        val homeHandler = homeIntent.resolveActivity(packageManager)
+        Log.i(TAG, "HOME_DIAG: resolvedHomeActivity=$homeHandler")
+        SleepMateLog.add(this, "解析到的默认桌面=$homeHandler")
+
+        try {
+            if (homeHandler == null) {
+                throw android.content.ActivityNotFoundException("No HOME activity resolved")
+            }
+            // Always return to the launcher first. Lock only after UsageStats confirms
+            // that the launcher is actually foreground, so we do not lock over a
+            // still-active media browser merely because startActivity returned.
+            homeIntent.component = homeHandler
+            updateNotification("已确认睡眠；正在先返回桌面")
+            startActivity(homeIntent)
+            Log.i(TAG, "HOME_DIAG: explicit launcher startActivity returned without exception")
+            SleepMateLog.add(this, "已向默认桌面发送明确组件跳转请求；等待确认前台切换")
+
+            var returnedToLauncher = false
+            var previousCheckAt = 0L
+            for (checkAtMs in listOf(500L, 1500L, 3000L)) {
+                delay(checkAtMs - previousCheckAt)
+                previousCheckAt = checkAtMs
+                refreshForegroundState()
+                returnedToLauncher = lastForegroundPackage == homeHandler.packageName
+                val message = "发出HOME请求后${checkAtMs}毫秒：前台=$lastForegroundPackage；默认桌面=${homeHandler.packageName}；已回桌面=$returnedToLauncher；屏幕亮起=$screenInteractive"
+                Log.i(TAG, "HOME_DIAG: $message")
+                SleepMateLog.add(this, message)
+                if (returnedToLauncher || !screenInteractive) break
+            }
+
+            if (!screenInteractive || !power.isInteractive) {
+                SleepMateLog.add(this, "返回桌面等待期间屏幕已关闭；不再执行后续锁屏")
+                return
+            }
+
+            if (!returnedToLauncher) {
+                // Returning to the launcher is attempted first, but it must not block
+                // the existing automatic-lock behavior: some apps pause playback
+                // or stop foreground activity when the screen is locked.
+                SleepMateLog.add(this, "3秒内未确认返回桌面；仍按原有流程继续执行自动锁屏")
+                updateNotification("未确认返回桌面；继续执行自动锁屏")
+            } else {
+                SleepMateLog.add(this, "已确认返回桌面")
+                updateNotification("已返回桌面")
+            }
+
+            if (adminActive) {
+                SleepMateLog.add(this, if (returnedToLauncher)
+                    "已返回桌面；现在执行设备管理员锁屏"
+                else
+                    "未确认返回桌面；仍执行设备管理员锁屏")
+                updateNotification("正在锁定屏幕")
+                dpm.lockNow()
+            } else {
+                updateNotification(if (returnedToLauncher)
+                    "已返回桌面；设备管理员未启用，无法自动锁屏"
+                else
+                    "未确认返回桌面；设备管理员未启用，无法自动锁屏")
+                SleepMateLog.add(this, if (returnedToLauncher)
+                    "已确认返回桌面；设备管理员未启用，本次仅返回桌面"
+                else
+                    "未确认返回桌面；设备管理员未启用，本次无法自动锁屏")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "HOME_DIAG: launcher-first protection failed: ${e.javaClass.simpleName}: ${e.message}", e)
+            SleepMateLog.add(this, "先返回桌面流程异常：${e.javaClass.simpleName}: ${e.message}；本次不执行锁屏")
+            updateNotification("返回桌面失败；本次暂不锁屏，请查看诊断日志")
         }
     }
 
@@ -392,14 +519,11 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         running.value = false
         detectionJob?.cancel()
         cameraJob?.cancel()
+        foregroundMonitorJob?.cancel()
         scope.cancel()
         unregisterMotionSensor()
-        controllerCallbacks.forEach { (controller, callback) ->
-            try { controller.unregisterCallback(callback) } catch (_: Exception) { }
-        }
-        controllerCallbacks.clear()
-        try { mediaSessionManager.removeOnActiveSessionsChangedListener(activeSessionsListener) } catch (_: Exception) { }
         try { unregisterReceiver(screenReceiver) } catch (_: Exception) { }
+        cameraWindowId++
         cameraProvider?.unbindAll()
         detector.close()
         cameraExecutor.shutdown()
@@ -413,14 +537,23 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         }
     }
 
-    private fun notification(message: String): Notification =
-        NotificationCompat.Builder(this, CHANNEL_ID)
+    private fun notification(message: String): Notification {
+        val openAppIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val contentPendingIntent = PendingIntent.getActivity(
+            this, 0, openAppIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentIntent(contentPendingIntent)
             .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
             .setContentTitle("SleepMate")
             .setContentText(message)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .build()
+    }
 
     private fun updateNotification(message: String) {
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(message))
@@ -440,8 +573,12 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         private const val EYES_CLOSED_REQUIRED_MS = 3000L
         private const val PHONE_STILL_REQUIRED_MS = 8000L
         private const val NO_ACTIVITY_REQUIRED_MS = 5 * 60_000L
+        private const val INITIAL_USAGE_EVENT_WINDOW_MS = 10_000L
+        private const val USAGE_EVENT_OVERLAP_MS = 5_000L
+        private const val MAX_REMEMBERED_USAGE_EVENTS = 128
         private const val CAMERA_WINDOW_MS = 30_000L
         private const val MOVEMENT_THRESHOLD = 1.0f
+        private const val TAG = "SleepMate"
         private const val CHANNEL_ID = "sleepguard_protection"
         private const val NOTIFICATION_ID = 1001
 
