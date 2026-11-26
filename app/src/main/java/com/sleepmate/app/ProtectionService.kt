@@ -46,7 +46,8 @@ import kotlin.coroutines.resumeWithException
 class ProtectionService : LifecycleService(), SensorEventListener {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
-    private lateinit var detector: FaceDetector
+    @Volatile private var detector: FaceDetector? = null
+    private val detectorLock = Any()
     private lateinit var sensorManager: SensorManager
     private lateinit var usageStatsManager: UsageStatsManager
 
@@ -100,12 +101,6 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        val options = FaceDetectorOptions.Builder()
-            .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
-            .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
-            .enableTracking()
-            .build()
-        detector = FaceDetection.getClient(options)
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         screenInteractive = (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
@@ -152,7 +147,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         foregroundMonitorJob = scope.launch {
             while (isActive) {
                 refreshForegroundState()
-                delay(2000L)
+                delay(if (targetAppForeground) ACTIVE_FOREGROUND_POLL_MS else IDLE_FOREGROUND_POLL_MS)
             }
         }
     }
@@ -234,7 +229,13 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private fun registerMotionSensor() {
         if (sensorRegistered) return
         val sensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return
-        sensorRegistered = sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+        // Sample at approximately 3.3 Hz without batching so movement callbacks are not delayed.
+        sensorRegistered = sensorManager.registerListener(
+            this,
+            sensor,
+            MOTION_SENSOR_SAMPLING_PERIOD_US,
+            MOTION_SENSOR_MAX_REPORT_LATENCY_US
+        )
         stillSince = 0L
     }
 
@@ -370,6 +371,17 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         }
     }
 
+    private fun getOrCreateFaceDetector(): FaceDetector = synchronized(detectorLock) {
+        detector ?: run {
+            val options = FaceDetectorOptions.Builder()
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
+                .enableTracking()
+                .build()
+            FaceDetection.getClient(options).also { detector = it }
+        }
+    }
+
     private fun analyzeFrame(proxy: ImageProxy, windowId: Long) {
         if (windowId != cameraWindowId || triggered.get() || !screenInteractive || !targetAppForeground) {
             proxy.close()
@@ -382,7 +394,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 return
             }
             val image = InputImage.fromMediaImage(mediaImage, proxy.imageInfo.rotationDegrees)
-            detector.process(image)
+            getOrCreateFaceDetector().process(image)
                 .addOnSuccessListener(cameraExecutor) { faces ->
                     if (windowId != cameraWindowId || !screenInteractive || !targetAppForeground || triggered.get()) return@addOnSuccessListener
                     validFrameAnalyzedInWindow = true
@@ -525,7 +537,10 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         try { unregisterReceiver(screenReceiver) } catch (_: Exception) { }
         cameraWindowId++
         cameraProvider?.unbindAll()
-        detector.close()
+        synchronized(detectorLock) {
+            detector?.close()
+            detector = null
+        }
         cameraExecutor.shutdown()
         super.onDestroy()
     }
@@ -570,6 +585,10 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         const val ACTION_START = "com.sleepmate.app.START"
         const val ACTION_STOP = "com.sleepmate.app.STOP"
         const val ACTION_SELECTION_CHANGED = "com.sleepmate.app.SELECTION_CHANGED"
+        private const val ACTIVE_FOREGROUND_POLL_MS = 2500L
+        private const val IDLE_FOREGROUND_POLL_MS = 4500L
+        private const val MOTION_SENSOR_SAMPLING_PERIOD_US = 300_000
+        private const val MOTION_SENSOR_MAX_REPORT_LATENCY_US = 0
         private const val EYES_CLOSED_REQUIRED_MS = 3000L
         private const val PHONE_STILL_REQUIRED_MS = 8000L
         private const val NO_ACTIVITY_REQUIRED_MS = 5 * 60_000L
