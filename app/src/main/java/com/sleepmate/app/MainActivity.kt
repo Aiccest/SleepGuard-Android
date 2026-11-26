@@ -247,7 +247,7 @@ private fun HomeScreen(
             Image(
                 painter = painterResource(R.drawable.ic_sleepguard_foreground),
                 contentDescription = "SleepMate 正式图标",
-                modifier = Modifier.size(44.dp).padding(2.dp),
+                modifier = Modifier.size(62.dp),
                 contentScale = ContentScale.Fit
             )
             Spacer(Modifier.width(12.dp))
@@ -391,7 +391,7 @@ private fun MonitorAppsScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                "前台使用所选应用时启动监测，应用内页面、视频和直播均纳入。",
+                "前台使用所选应用时启动监测",
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -503,7 +503,7 @@ private fun AboutScreen(activity: MainActivity, onBack: () -> Unit) {
             Image(
                 painter = painterResource(R.drawable.ic_sleepguard_foreground),
                 contentDescription = "SleepMate 正式图标",
-                modifier = Modifier.size(60.dp).padding(4.dp),
+                modifier = Modifier.size(62.dp),
                 contentScale = ContentScale.Fit
             )
             Text("SleepMate", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
