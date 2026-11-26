@@ -479,19 +479,29 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             }
 
             if (!returnedToLauncher) {
-                updateNotification("未确认返回桌面；本次暂不锁屏，请查看运行日志")
-                SleepMateLog.add(this, "3秒内未确认返回桌面；为避免锁屏后媒体仍在前台播放，本次取消自动锁屏")
-                return
+                // Returning to the launcher is attempted first, but it must not block
+                // the existing automatic-lock behavior: some apps pause playback
+                // or stop foreground activity when the screen is locked.
+                SleepMateLog.add(this, "3秒内未确认返回桌面；仍按原有流程继续执行自动锁屏")
+                updateNotification("未确认返回桌面；继续执行自动锁屏")
+            } else {
+                SleepMateLog.add(this, "已确认返回桌面")
+                updateNotification("已返回桌面")
             }
 
-            updateNotification("已确认返回桌面")
             if (adminActive) {
-                SleepMateLog.add(this, "已确认返回桌面；现在执行设备管理员锁屏")
-                updateNotification("已返回桌面；正在锁定屏幕")
+                SleepMateLog.add(this, returnedToLauncher
+                    ? "已返回桌面；现在执行设备管理员锁屏"
+                    : "未确认返回桌面；仍执行设备管理员锁屏")
+                updateNotification("正在锁定屏幕")
                 dpm.lockNow()
             } else {
-                updateNotification("已返回桌面；设备管理员未启用，无法自动锁屏")
-                SleepMateLog.add(this, "已确认返回桌面；设备管理员未启用，本次仅返回桌面")
+                updateNotification(returnedToLauncher
+                    ? "已返回桌面；设备管理员未启用，无法自动锁屏"
+                    : "未确认返回桌面；设备管理员未启用，无法自动锁屏")
+                SleepMateLog.add(this, returnedToLauncher
+                    ? "已确认返回桌面；设备管理员未启用，本次仅返回桌面"
+                    : "未确认返回桌面；设备管理员未启用，本次无法自动锁屏")
             }
         } catch (e: Exception) {
             Log.e(TAG, "HOME_DIAG: launcher-first protection failed: ${e.javaClass.simpleName}: ${e.message}", e)
