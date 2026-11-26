@@ -490,18 +490,21 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             }
 
             if (adminActive) {
-                SleepMateLog.add(this, returnedToLauncher
-                    ? "已返回桌面；现在执行设备管理员锁屏"
-                    : "未确认返回桌面；仍执行设备管理员锁屏")
+                SleepMateLog.add(this, if (returnedToLauncher)
+                    "已返回桌面；现在执行设备管理员锁屏"
+                else
+                    "未确认返回桌面；仍执行设备管理员锁屏")
                 updateNotification("正在锁定屏幕")
                 dpm.lockNow()
             } else {
-                updateNotification(returnedToLauncher
-                    ? "已返回桌面；设备管理员未启用，无法自动锁屏"
-                    : "未确认返回桌面；设备管理员未启用，无法自动锁屏")
-                SleepMateLog.add(this, returnedToLauncher
-                    ? "已确认返回桌面；设备管理员未启用，本次仅返回桌面"
-                    : "未确认返回桌面；设备管理员未启用，本次无法自动锁屏")
+                updateNotification(if (returnedToLauncher)
+                    "已返回桌面；设备管理员未启用，无法自动锁屏"
+                else
+                    "未确认返回桌面；设备管理员未启用，无法自动锁屏")
+                SleepMateLog.add(this, if (returnedToLauncher)
+                    "已确认返回桌面；设备管理员未启用，本次仅返回桌面"
+                else
+                    "未确认返回桌面；设备管理员未启用，本次无法自动锁屏")
             }
         } catch (e: Exception) {
             Log.e(TAG, "HOME_DIAG: launcher-first protection failed: ${e.javaClass.simpleName}: ${e.message}", e)
