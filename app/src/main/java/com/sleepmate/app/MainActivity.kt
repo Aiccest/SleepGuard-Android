@@ -56,6 +56,7 @@ class MainActivity : ComponentActivity() {
     var cameraGranted by mutableStateOf(false)
     var adminActive by mutableStateOf(false)
     var usageAccessGranted by mutableStateOf(false)
+    var overlayPermissionGranted by mutableStateOf(false)
     var notificationsGranted by mutableStateOf(true)
     var installedMonitorApps by mutableStateOf<List<InstalledMonitorApp>>(emptyList())
     var appsLoading by mutableStateOf(false)
@@ -86,6 +87,7 @@ class MainActivity : ComponentActivity() {
         usageAccessGranted = try {
             ops.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), packageName) == AppOpsManager.MODE_ALLOWED
         } catch (_: Exception) { false }
+        overlayPermissionGranted = Settings.canDrawOverlays(this)
         loadLaunchableApps()
     }
 
@@ -130,6 +132,10 @@ class MainActivity : ComponentActivity() {
         }
     }
     fun openUsageAccess() = startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+    fun openOverlayPermission() {
+        val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+        startActivity(intent)
+    }
 
     fun openAdminActivation() {
         val component = ComponentName(this, SleepGuardAdminReceiver::class.java)
@@ -284,6 +290,7 @@ private fun HomeScreen(
                 PermissionLine("摄像头", activity.cameraGranted)
                 PermissionLine("运行通知（Android 13+）", activity.notificationsGranted)
                 PermissionLine("使用情况访问", activity.usageAccessGranted)
+                PermissionLine("悬浮窗特殊权限（辅助后台返回桌面）", activity.overlayPermissionGranted)
                 PermissionLine("设备管理员（自动锁屏）", activity.adminActive)
                 if (!activity.adminActive) {
                     Text(
@@ -294,6 +301,12 @@ private fun HomeScreen(
                 }
                 OutlinedButton(onClick = { activity.requestCamera() }, Modifier.fillMaxWidth()) { Text("授权摄像头") }
                 OutlinedButton(onClick = { activity.openUsageAccess() }, Modifier.fillMaxWidth()) { Text("开启使用情况访问") }
+                OutlinedButton(onClick = { activity.openOverlayPermission() }, Modifier.fillMaxWidth()) { Text("允许显示在其他应用上层") }
+                Text(
+                    "此权限用于申请 Android 后台启动桌面的例外；SleepMate 不会创建悬浮按钮或遮挡其他应用。是否生效仍取决于手机系统。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 OutlinedButton(onClick = { activity.openAdminActivation() }, Modifier.fillMaxWidth()) { Text("激活自动锁屏权限") }
                 TextButton(onClick = { activity.refreshPermissions() }, modifier = Modifier.align(Alignment.End)) { Text("刷新权限状态") }
             }
