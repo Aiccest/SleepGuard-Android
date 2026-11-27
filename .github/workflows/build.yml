@@ -39,6 +39,22 @@ jobs:
             test -s "$RUNNER_TEMP/sleepmate-release.jks"
           fi
 
+      - name: Validate release signing configuration
+        if: ${{ secrets.SLEEPMATE_KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_PATH: ${{ runner.temp }}/sleepmate-release.jks
+          STORE_PASSWORD: ${{ secrets.SLEEPMATE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SLEEPMATE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.SLEEPMATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -s "$KEYSTORE_PATH" || { echo "Keystore file is missing or empty."; exit 1; }
+          test -n "$STORE_PASSWORD" || { echo "SLEEPMATE_STORE_PASSWORD is missing."; exit 1; }
+          test -n "$KEY_ALIAS" || { echo "SLEEPMATE_KEY_ALIAS is missing."; exit 1; }
+          test -n "$KEY_PASSWORD" || { echo "SLEEPMATE_KEY_PASSWORD is missing."; exit 1; }
+          keytool -list -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+          echo "Keystore, store password, and key alias are valid."
+
       - name: Build debug and release APKs
         env:
           SLEEPMATE_KEYSTORE_PATH: ${{ secrets.SLEEPMATE_KEYSTORE_BASE64 != '' && format('{0}/sleepmate-release.jks', runner.temp) || '' }}
