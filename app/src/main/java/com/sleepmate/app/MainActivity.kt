@@ -350,7 +350,7 @@ private fun SettingsScreen(
             SettingsEntry("监测应用管理", "选择需要纳入睡眠保护的应用", onMonitorApps)
             SettingsEntry("低功耗监测策略", "查看检测流程、触发条件和时间安排", onStrategy)
             SettingsEntry("关于 SleepMate", "项目介绍、版本信息、开源协议", onAbout)
-            SettingsEntry("运行日志", "查看睡眠保护与返回桌面诊断记录", onLogs)
+            SettingsEntry("运行日志", "查看前台应用监测、异常恢复与返回桌面诊断记录", onLogs)
             Spacer(Modifier.height(8.dp))
             Text("辅助功能", style = MaterialTheme.typography.titleMedium)
             OutlinedButton(onClick = onTestLock, modifier = Modifier.fillMaxWidth()) { Text("测试锁屏") }
@@ -565,7 +565,7 @@ private fun LogsScreen(activity: MainActivity, onBack: () -> Unit) {
             }, enabled = entries.isNotEmpty()) { Text("复制日志") }
             OutlinedButton(onClick = { SleepMateLog.clear(activity); entries = emptyList() }) { Text("清空") }
         }
-        Text("日志保存在本机，仅保留最近300条。触发一次睡眠保护后点刷新，再复制发给我。", Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall)
+        Text("日志保存在本机，仅保留最近300条。用于排查前台应用识别、监测循环异常、自动恢复和返回桌面问题；复现问题后点刷新，再复制发给我。", Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall)
         HorizontalDivider()
         if (entries.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("暂无日志") }
         else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
