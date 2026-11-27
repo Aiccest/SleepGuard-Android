@@ -583,13 +583,13 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         Log.i(TAG, "HOME_DIAG: resolvedHomeActivity=$homeHandler")
         SleepMateLog.add(this, "解析到的默认桌面=$homeHandler")
 
+        var returnedToLauncher = false
         try {
             if (homeHandler == null) {
                 throw android.content.ActivityNotFoundException("No HOME activity resolved")
             }
-            // Always return to the launcher first. Lock only after UsageStats confirms
-            // that the launcher is actually foreground, so we do not lock over a
-            // still-active media browser merely because startActivity returned.
+            // HOME is best-effort only. Failure to switch apps must never prevent
+            // an authorized device-admin lock after sleep has been confirmed.
             homeIntent.component = homeHandler
             val homeRequestAt = System.currentTimeMillis()
             updateNotification("已确认睡眠；正在先返回桌面")
@@ -597,11 +597,11 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             Log.i(TAG, "HOME_DIAG: explicit launcher startActivity returned without exception")
             SleepMateLog.add(this, "已向默认桌面发送明确组件跳转请求；等待确认前台切换")
 
-            var returnedToLauncher = false
             var previousCheckAt = 0L
             for (checkAtMs in listOf(500L, 1500L, 3000L)) {
                 delay(checkAtMs - previousCheckAt)
                 previousCheckAt = checkAtMs
+                if (!screenInteractive || !power.isInteractive) break
                 val usageQuerySucceeded = refreshForegroundState()
                 val freshLauncherEvent = lastForegroundEventTimestamp > homeRequestAt
                 returnedToLauncher = usageQuerySucceeded && freshLauncherEvent &&
@@ -609,46 +609,51 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 val message = "发出HOME请求后${checkAtMs}毫秒：前台=$lastForegroundPackage；默认桌面=${homeHandler.packageName}；UsageStats查询成功=$usageQuerySucceeded；HOME请求后新前台事件=$freshLauncherEvent；已回桌面=$returnedToLauncher；屏幕亮起=$screenInteractive"
                 Log.i(TAG, "HOME_DIAG: $message")
                 SleepMateLog.add(this, message)
-                if (returnedToLauncher || !screenInteractive) break
+                if (returnedToLauncher) break
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "HOME_DIAG: launcher return attempt failed; lock will still be evaluated", e)
+            SleepMateLog.add(this, "返回桌面尝试失败：${e.javaClass.simpleName}: ${e.message}；继续检查锁屏条件")
+        }
 
-            if (!screenInteractive || !power.isInteractive) {
-                SleepMateLog.add(this, "返回桌面等待期间屏幕已关闭；不再执行后续锁屏")
-                return
-            }
+        if (!screenInteractive || !power.isInteractive) {
+            SleepMateLog.add(this, "返回桌面尝试结束时屏幕已关闭；不再重复执行锁屏")
+            return
+        }
 
-            if (!returnedToLauncher) {
-                // Returning to the launcher is attempted first, but it must not block
-                // the existing automatic-lock behavior: some apps pause playback
-                // or stop foreground activity when the screen is locked.
-                SleepMateLog.add(this, "3秒内未确认返回桌面；仍按原有流程继续执行自动锁屏")
-                updateNotification("未确认返回桌面；继续执行自动锁屏")
-            } else {
-                SleepMateLog.add(this, "已确认返回桌面")
-                updateNotification("已返回桌面")
-            }
+        if (!returnedToLauncher) {
+            SleepMateLog.add(this, "未确认返回桌面；仍按设计继续执行自动锁屏")
+            updateNotification("未确认返回桌面；继续执行自动锁屏")
+        } else {
+            SleepMateLog.add(this, "已确认返回桌面")
+            updateNotification("已返回桌面；正在执行自动锁屏")
+        }
 
-            if (adminActive) {
+        if (adminActive) {
+            try {
                 SleepMateLog.add(this, if (returnedToLauncher)
                     "已返回桌面；现在执行设备管理员锁屏"
                 else
                     "未确认返回桌面；仍执行设备管理员锁屏")
                 updateNotification("正在锁定屏幕")
                 dpm.lockNow()
-            } else {
-                updateNotification(if (returnedToLauncher)
-                    "已返回桌面；设备管理员未启用，无法自动锁屏"
-                else
-                    "未确认返回桌面；设备管理员未启用，无法自动锁屏")
-                SleepMateLog.add(this, if (returnedToLauncher)
-                    "已确认返回桌面；设备管理员未启用，本次仅返回桌面"
-                else
-                    "未确认返回桌面；设备管理员未启用，本次无法自动锁屏")
+                SleepMateLog.add(this, "设备管理员锁屏请求已调用")
+            } catch (e: Exception) {
+                Log.e(TAG, "HOME_DIAG: device-admin lock failed", e)
+                SleepMateLog.add(this, "设备管理员锁屏调用失败：${e.javaClass.simpleName}: ${e.message}")
+                updateNotification("自动锁屏失败；请检查设备管理员权限")
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "HOME_DIAG: launcher-first protection failed: ${e.javaClass.simpleName}: ${e.message}", e)
-            SleepMateLog.add(this, "先返回桌面流程异常：${e.javaClass.simpleName}: ${e.message}；本次不执行锁屏")
-            updateNotification("返回桌面失败；本次暂不锁屏，请查看诊断日志")
+        } else {
+            updateNotification(if (returnedToLauncher)
+                "已返回桌面；设备管理员未启用，无法自动锁屏"
+            else
+                "未确认返回桌面；设备管理员未启用，无法自动锁屏")
+            SleepMateLog.add(this, if (returnedToLauncher)
+                "已确认返回桌面；设备管理员未启用，本次仅返回桌面"
+            else
+                "未确认返回桌面；设备管理员未启用，本次无法自动锁屏")
         }
     }
 
