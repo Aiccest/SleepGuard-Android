@@ -73,6 +73,7 @@ jobs:
           SLEEPMATE_KEY_PASSWORD: ${{ secrets.SLEEPMATE_KEY_PASSWORD }}
         run: gradle --no-daemon assembleDebug assembleRelease
 
+      # Package the actual APK output name; unsigned release builds use a different suffix.
       - name: Package release APK
         shell: bash
         run: |
