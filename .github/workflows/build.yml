@@ -3,7 +3,7 @@ name: Build signed SleepMate release APK
 on:
   workflow_dispatch:
   push:
-    branches: [ "main", "feature/usage-access-sleepmate-redesign", "feature/power-saving-optimization", "feature/persistent-protection-recovery" ]
+    branches: [ "main", "feature/usage-access-sleepmate-redesign", "feature/power-saving-optimization", "feature/persistent-protection-recovery", "fix/build169-home-return-verification" ]
 
 jobs:
   build:
