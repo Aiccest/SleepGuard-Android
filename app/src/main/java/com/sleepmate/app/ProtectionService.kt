@@ -120,6 +120,22 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         } else {
             registerReceiver(screenReceiver, filter)
         }
+
+        // A service can be recreated before its start request is redelivered on some
+        // device builds. If no onStartCommand arrives, make one bounded recovery request
+        // from this newly-created instance instead of waiting for MainActivity to open.
+        android.os.Handler(mainLooper).postDelayed({
+            if (lastStartId == 0 && isProtectionDesired(this) && !running.value) {
+                SleepMateLog.add(this, "服务实例创建后未收到onStartCommand；期望保持开启=true；主动补发一次RECOVER启动请求")
+                startRequestPending.set(false)
+                try {
+                    requestServiceStart(this, ACTION_RECOVER)
+                } catch (e: Exception) {
+                    SleepMateLog.add(this, "实例创建后的RECOVER补发失败：${e.javaClass.simpleName}: ${e.message}")
+                    Log.e(TAG, "Deferred service recovery request failed", e)
+                }
+            }
+        }, 250L)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
