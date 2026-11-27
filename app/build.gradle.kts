@@ -14,6 +14,20 @@ android {
         versionCode = 4
         versionName = "1.3.0"
     }
+    signingConfigs {
+        create("release") {
+            val keystorePath = System.getenv("SLEEPMATE_STORE_FILE")
+            storeFile = if (keystorePath.isNullOrBlank()) file("missing-release-keystore.jks") else file(keystorePath)
+            storePassword = System.getenv("SLEEPMATE_STORE_PASSWORD")
+            keyAlias = System.getenv("SLEEPMATE_KEY_ALIAS")
+            keyPassword = System.getenv("SLEEPMATE_KEY_PASSWORD")
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            signingConfig = signingConfigs.getByName("release")
+        }
+    }
     buildFeatures { compose = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
