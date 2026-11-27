@@ -58,6 +58,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private var foregroundMonitorJob: Job? = null
     private var lastMonitorHeartbeatAt = 0L
     private var lastLoggedForegroundPackage: String? = null
+    private var lastStartAction: String = "尚未收到启动请求"
+    private var lastStartId: Int = 0
     private var sensorRegistered = false
     private var lastActivityAt = 0L
     private var stillSince = 0L
@@ -104,7 +106,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     override fun onCreate() {
         super.onCreate()
-        SleepMateLog.add(this, "服务实例创建；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}")
+        SleepMateLog.add(this, "服务实例创建；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；期望保持开启=${isProtectionDesired(this)}；说明=等待系统调用onStartCommand后再决定是否启动前台服务")
         createNotificationChannel()
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
@@ -123,14 +125,21 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         startRequestPending.set(false)
+        lastStartAction = intent?.action ?: "系统重建（intent=null）"
+        lastStartId = startId
+        SleepMateLog.add(this, "onStartCommand进入；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；startId=$startId；action=$lastStartAction；期望保持开启=${isProtectionDesired(this)}；flags=$flags")
         if (intent?.action == ACTION_STOP) {
             setProtectionDesired(this, false)
             stopSelf()
             return START_NOT_STICKY
         }
         if (intent == null && !isProtectionDesired(this)) {
-            stopSelf()
+            SleepMateLog.add(this, "系统尝试重建服务，但用户期望状态为关闭；拒绝恢复并停止服务")
+            stopSelf(startId)
             return START_NOT_STICKY
+        }
+        if (intent == null) {
+            SleepMateLog.add(this, "系统以null intent重建服务；用户期望保持开启=true；继续初始化前台服务和监测循环")
         }
         running.value = true
         SleepMateLog.add(this, "保护服务收到启动请求；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；action=${intent?.action ?: "系统重建"}；期望保持开启=${isProtectionDesired(this)}；监测循环活动=${foregroundMonitorJob?.isActive == true}")
@@ -570,13 +579,14 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        SleepMateLog.add(this, "SleepMate最近任务被划掉；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；监测循环活动=${foregroundMonitorJob?.isActive == true}；屏幕亮起=$screenInteractive；目标应用前台=$targetAppForeground；最近识别=$lastForegroundPackage")
+        SleepMateLog.add(this, "SleepMate最近任务被划掉；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；startAction=$lastStartAction；startId=$lastStartId；期望保持开启=${isProtectionDesired(this)}；监测循环活动=${foregroundMonitorJob?.isActive == true}；屏幕亮起=$screenInteractive；目标应用前台=$targetAppForeground；最近识别=$lastForegroundPackage；rootAction=${rootIntent?.action}")
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
-        SleepMateLog.add(this, "保护服务 onDestroy；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；监测循环活动=${foregroundMonitorJob?.isActive == true}；服务进程内的前台监测循环将结束")
+        SleepMateLog.add(this, "保护服务 onDestroy；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；lastStartAction=$lastStartAction；lastStartId=$lastStartId；期望保持开启=${isProtectionDesired(this)}；监测循环活动=${foregroundMonitorJob?.isActive == true}；说明=onDestroy本身无法区分系统回收、用户停止或其他销毁原因")
         running.value = false
+        startRequestPending.set(false)
         detectionJob?.cancel()
         cameraJob?.cancel()
         foregroundMonitorJob?.cancel()
