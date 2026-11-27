@@ -1,9 +1,9 @@
-name: Build SleepMate debug APK
+name: Build signed SleepMate release APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "main", "feature/usage-access-sleepmate-redesign", "feature/power-saving-optimization" ]
+    branches: [ "main", "feature/usage-access-sleepmate-redesign", "feature/power-saving-optimization", "feature/persistent-protection-recovery" ]
 
 jobs:
   build:
@@ -30,13 +30,26 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build debug APK
-        run: gradle --no-daemon assembleDebug
+      - name: Decode signing keystore
+        env:
+          SLEEPMATE_KEYSTORE_BASE64: ${{ secrets.SLEEPMATE_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$SLEEPMATE_KEYSTORE_BASE64"
+          echo "$SLEEPMATE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/sleepmate-signing-2026.jks"
+          test -s "$RUNNER_TEMP/sleepmate-signing-2026.jks"
 
-      - name: Upload APK
+      - name: Build signed release APK
+        env:
+          SLEEPMATE_STORE_FILE: ${{ runner.temp }}/sleepmate-signing-2026.jks
+          SLEEPMATE_STORE_PASSWORD: ${{ secrets.SLEEPMATE_STORE_PASSWORD }}
+          SLEEPMATE_KEY_ALIAS: ${{ secrets.SLEEPMATE_KEY_ALIAS }}
+          SLEEPMATE_KEY_PASSWORD: ${{ secrets.SLEEPMATE_KEY_PASSWORD }}
+        run: gradle --no-daemon assembleRelease
+
+      - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: SleepMate-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: SleepMate-release-signed-apk
+          path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 14

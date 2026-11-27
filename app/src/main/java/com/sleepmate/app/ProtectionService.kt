@@ -36,9 +36,12 @@ import com.google.mlkit.vision.face.FaceDetector
 import com.google.mlkit.vision.face.FaceDetectorOptions
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.LinkedHashSet
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -48,6 +51,9 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     @Volatile private var detector: FaceDetector? = null
     private val detectorLock = Any()
+    private val detectorClosing = AtomicBoolean(false)
+    private val inFlightDetectorTasks = AtomicInteger(0)
+    @Volatile private var activeImageAnalysis: ImageAnalysis? = null
     private lateinit var sensorManager: SensorManager
     private lateinit var usageStatsManager: UsageStatsManager
 
@@ -56,6 +62,10 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private var lastUsageEventQueryAt = 0L
     private val processedUsageEvents = LinkedHashSet<String>()
     private var foregroundMonitorJob: Job? = null
+    private var lastMonitorHeartbeatAt = 0L
+    private var lastLoggedForegroundPackage: String? = null
+    private var lastStartAction: String = "尚未收到启动请求"
+    private var lastStartId: Int = 0
     private var sensorRegistered = false
     private var lastActivityAt = 0L
     private var stillSince = 0L
@@ -69,12 +79,13 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     private var detectionJob: Job? = null
     private var cameraJob: Job? = null
-    private var cameraProvider: ProcessCameraProvider? = null
+    private val cameraMutex = Mutex()
     @Volatile private var cameraWindowId = 0L
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> {
+                    SleepMateLog.add(this@ProtectionService, "屏幕关闭广播；暂停前台应用监测")
                     screenInteractive = false
                     stopForegroundMonitor()
                     triggered.set(false)
@@ -85,11 +96,11 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     eyesClosedSince = 0L
                     stillSince = 0L
                     unregisterMotionSensor()
-                    scope.launch { withContext(Dispatchers.Main) { cameraProvider?.unbindAll() } }
                     updateNotification("屏幕已关闭；睡眠检测与摄像头已停止")
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     screenInteractive = true
+                    SleepMateLog.add(this@ProtectionService, "屏幕亮起广播；检查并恢复前台应用监测")
                     if (hasUsageAccess()) startForegroundMonitor()
                     refreshForegroundState()
                     resumeMonitoringIfEligible()
@@ -100,6 +111,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     override fun onCreate() {
         super.onCreate()
+        SleepMateLog.add(this, "服务实例创建；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；期望保持开启=${isProtectionDesired(this)}；说明=等待系统调用onStartCommand后再决定是否启动前台服务")
         createNotificationChannel()
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
@@ -113,17 +125,52 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         } else {
             registerReceiver(screenReceiver, filter)
         }
+
+        // A service can be recreated before its start request is redelivered on some
+        // device builds. If no onStartCommand arrives, make one bounded recovery request
+        // from this newly-created instance instead of waiting for MainActivity to open.
+        android.os.Handler(mainLooper).postDelayed({
+            if (lastStartId == 0 && isProtectionDesired(this) && !running.value) {
+                SleepMateLog.add(this, "服务实例创建后未收到onStartCommand；期望保持开启=true；主动补发一次RECOVER启动请求")
+                startRequestPending.set(false)
+                try {
+                    requestServiceStart(this, ACTION_RECOVER)
+                } catch (e: Exception) {
+                    SleepMateLog.add(this, "实例创建后的RECOVER补发失败：${e.javaClass.simpleName}: ${e.message}")
+                    Log.e(TAG, "Deferred service recovery request failed", e)
+                }
+            }
+        }, 250L)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        startRequestPending.set(false)
+        lastStartAction = intent?.action ?: "系统重建（intent=null）"
+        lastStartId = startId
+        SleepMateLog.add(this, "onStartCommand进入；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；startId=$startId；action=$lastStartAction；期望保持开启=${isProtectionDesired(this)}；flags=$flags")
         if (intent?.action == ACTION_STOP) {
+            setProtectionDesired(this, false)
             stopSelf()
             return START_NOT_STICKY
         }
+        if (!isProtectionDesired(this)) {
+            SleepMateLog.add(this, "收到启动/恢复请求，但用户期望状态为关闭；拒绝启动服务；action=${intent?.action ?: "系统重建（intent=null）"}")
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        if (intent == null) {
+            SleepMateLog.add(this, "系统以null intent重建服务；用户期望保持开启=true；继续初始化前台服务和监测循环")
+        }
         running.value = true
+        SleepMateLog.add(this, "保护服务收到启动请求；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；action=${intent?.action ?: "系统重建"}；期望保持开启=${isProtectionDesired(this)}；监测循环活动=${foregroundMonitorJob?.isActive == true}")
         startForeground(NOTIFICATION_ID, notification("睡眠保护已启动，正在等待监测条件"))
-        if (intent?.action == ACTION_SELECTION_CHANGED) {
+        if (intent?.action == ACTION_SELECTION_CHANGED || intent?.action == ACTION_RECONCILE) {
+            if (!hasUsageAccess()) {
+                updateNotification("请开启使用情况访问权限")
+                return START_STICKY
+            }
+            startForegroundMonitor()
             refreshForegroundState()
             return START_STICKY
         }
@@ -143,16 +190,35 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     private fun startForegroundMonitor() {
-        if (!screenInteractive || foregroundMonitorJob?.isActive == true) return
+        if (!screenInteractive) {
+            SleepMateLog.add(this, "未启动前台监测循环：屏幕处于关闭状态")
+            return
+        }
+        if (foregroundMonitorJob?.isActive == true) return
+        lastMonitorHeartbeatAt = SystemClock.elapsedRealtime()
+        SleepMateLog.add(this, "前台应用监测循环已启动")
         foregroundMonitorJob = scope.launch {
             while (isActive) {
-                refreshForegroundState()
+                try {
+                    refreshForegroundState()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    SleepMateLog.add(this@ProtectionService, "前台监测循环异常，稍后继续：${e.javaClass.simpleName}: ${e.message}")
+                    Log.e(TAG, "Foreground monitor iteration failed", e)
+                }
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastMonitorHeartbeatAt >= MONITOR_HEARTBEAT_LOG_INTERVAL_MS) {
+                    lastMonitorHeartbeatAt = now
+                    SleepMateLog.add(this@ProtectionService, "前台监测心跳正常；instance=${System.identityHashCode(this@ProtectionService)}；pid=${Process.myPid()}；循环活动=${foregroundMonitorJob?.isActive == true}；屏幕亮起=$screenInteractive；目标应用前台=$targetAppForeground；最近识别=$lastForegroundPackage")
+                }
                 delay(if (targetAppForeground) ACTIVE_FOREGROUND_POLL_MS else IDLE_FOREGROUND_POLL_MS)
             }
         }
     }
 
     private fun stopForegroundMonitor() {
+        if (foregroundMonitorJob != null) SleepMateLog.add(this, "前台应用监测循环已请求停止/暂停")
         foregroundMonitorJob?.cancel()
         foregroundMonitorJob = null
     }
@@ -170,7 +236,13 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         } else {
             (lastUsageEventQueryAt - USAGE_EVENT_OVERLAP_MS).coerceAtLeast(0L)
         }
-        val events = usageStatsManager.queryEvents(eventWindowStart, now)
+        val events = try {
+            usageStatsManager.queryEvents(eventWindowStart, now)
+        } catch (e: Exception) {
+            SleepMateLog.add(this, "UsageStats前台事件查询失败：${e.javaClass.simpleName}: ${e.message}")
+            Log.e(TAG, "UsageStats queryEvents failed", e)
+            return
+        }
         val event = UsageEvents.Event()
         var foreground = lastForegroundPackage
         while (events.hasNextEvent()) {
@@ -190,12 +262,17 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         }
         lastUsageEventQueryAt = now
         lastForegroundPackage = foreground
+        if (lastLoggedForegroundPackage != foreground) {
+            SleepMateLog.add(this, "前台应用识别变化：${lastLoggedForegroundPackage ?: "无/未知"} → ${foreground ?: "无/未知"}；所选应用前台=${foreground in selected}")
+            lastLoggedForegroundPackage = foreground
+        }
         setTargetAppForeground(foreground in selected)
     }
 
     private fun setTargetAppForeground(active: Boolean) {
         if (targetAppForeground == active) return
         targetAppForeground = active
+        SleepMateLog.add(this, if (active) "所选监测应用进入前台；恢复睡眠检测" else "已离开全部所选监测应用；暂停睡眠检测")
         if (active) {
             lastActivityAt = SystemClock.elapsedRealtime()
             stillSince = 0L
@@ -209,7 +286,6 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             detectionJob?.cancel()
             cameraJob?.cancel()
             unregisterMotionSensor()
-            scope.launch { withContext(Dispatchers.Main) { cameraProvider?.unbindAll() } }
             triggered.set(false)
             eyesClosedSince = 0L
             consecutiveOpenEyeChecks = 0
@@ -260,7 +336,6 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             stillSince = 0L
             consecutiveOpenEyeChecks = 0
             cameraJob?.cancel()
-            scope.launch { withContext(Dispatchers.Main) { cameraProvider?.unbindAll() } }
             scheduleDetection(NO_ACTIVITY_REQUIRED_MS)
         } else if (stillSince == 0L) {
             stillSince = now
@@ -330,7 +405,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         }
     }
 
-    private suspend fun runCameraWindow(): Triple<Boolean, Boolean, Boolean> {
+    private suspend fun runCameraWindow(): Triple<Boolean, Boolean, Boolean> = cameraMutex.withLock {
         faceDetectedInWindow = false
         validFrameAnalyzedInWindow = false
         eyeStateDetectedInWindow = false
@@ -349,36 +424,64 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 }, cameraExecutor)
             }
             provider = resolvedProvider
-            cameraProvider = resolvedProvider
             val imageAnalysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
             analysis = imageAnalysis
+            activeImageAnalysis = imageAnalysis
             imageAnalysis.setAnalyzer(cameraExecutor) { proxy -> analyzeFrame(proxy, windowId) }
             withContext(Dispatchers.Main) {
-                resolvedProvider.unbindAll()
                 resolvedProvider.bindToLifecycle(this@ProtectionService, CameraSelector.DEFAULT_FRONT_CAMERA, imageAnalysis)
             }
             delay(CAMERA_WINDOW_MS)
-            return Triple(faceDetectedInWindow, validFrameAnalyzedInWindow, eyeStateDetectedInWindow)
+            Triple(faceDetectedInWindow, validFrameAnalyzedInWindow, eyeStateDetectedInWindow)
         } finally {
-            // Invalidate callbacks before detaching the analyzer and camera use case.
+            // The mutex keeps a new camera window from binding until this window's own
+            // analyzer and use case have been detached. Never unbind another window's use cases.
             if (cameraWindowId == windowId) cameraWindowId++
             withContext(NonCancellable + Dispatchers.Main) {
-                analysis?.clearAnalyzer()
-                provider?.unbindAll()
+                analysis?.let { useCase ->
+                    useCase.clearAnalyzer()
+                    provider?.unbind(useCase)
+                    if (activeImageAnalysis === useCase) activeImageAnalysis = null
+                }
             }
         }
     }
 
-    private fun getOrCreateFaceDetector(): FaceDetector = synchronized(detectorLock) {
-        detector ?: run {
+    // A detector task outlives the coroutine that opened the camera window. Keep
+    // the detector and its executor alive until every submitted ML Kit Task completes.
+    private fun beginDetectorTask(): FaceDetector? = synchronized(detectorLock) {
+        if (detectorClosing.get()) return@synchronized null
+        val activeDetector = detector ?: run {
             val options = FaceDetectorOptions.Builder()
                 .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
                 .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
                 .enableTracking()
                 .build()
             FaceDetection.getClient(options).also { detector = it }
+        }
+        inFlightDetectorTasks.incrementAndGet()
+        activeDetector
+    }
+
+    private fun finishDetectorTask() {
+        val remaining = inFlightDetectorTasks.decrementAndGet()
+        if (remaining < 0) {
+            inFlightDetectorTasks.set(0)
+            Log.e(TAG, "Detector task counter underflow")
+        }
+        closeDetectorIfIdle()
+    }
+
+    private fun closeDetectorIfIdle() {
+        synchronized(detectorLock) {
+            if (!detectorClosing.get() || inFlightDetectorTasks.get() != 0) return
+            detector?.close()
+            detector = null
+            // shutdown() drains already queued analyzer/completion callbacks; it does
+            // not interrupt an ML Kit operation that is still running.
+            cameraExecutor.shutdown()
         }
     }
 
@@ -387,14 +490,20 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             proxy.close()
             return
         }
+        val activeDetector = beginDetectorTask()
+        if (activeDetector == null) {
+            proxy.close()
+            return
+        }
         try {
             val mediaImage = proxy.image
             if (mediaImage == null) {
                 proxy.close()
+                finishDetectorTask()
                 return
             }
             val image = InputImage.fromMediaImage(mediaImage, proxy.imageInfo.rotationDegrees)
-            getOrCreateFaceDetector().process(image)
+            activeDetector.process(image)
                 .addOnSuccessListener(cameraExecutor) { faces ->
                     if (windowId != cameraWindowId || !screenInteractive || !targetAppForeground || triggered.get()) return@addOnSuccessListener
                     validFrameAnalyzedInWindow = true
@@ -419,10 +528,20 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                         eyesClosedSince = 0L
                     }
                 }
-                .addOnCompleteListener { proxy.close() }
+                .addOnCompleteListener(cameraExecutor) {
+                    try {
+                        proxy.close()
+                    } finally {
+                        finishDetectorTask()
+                    }
+                }
         } catch (_: Exception) {
-            // InputImage creation or detector submission can fail before a Task exists.
-            proxy.close()
+            // Submission can fail before a Task is returned; release both resources.
+            try {
+                proxy.close()
+            } finally {
+                finishDetectorTask()
+            }
         }
     }
 
@@ -439,7 +558,6 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         updateNotification("确认符合睡眠条件；正在锁定屏幕")
         detectionJob?.cancel()
         unregisterMotionSensor()
-        withContext(NonCancellable + Dispatchers.Main) { cameraProvider?.unbindAll() }
         if (!screenInteractive || !power.isInteractive || !targetAppForeground) {
             triggered.set(false)
             return
@@ -527,8 +645,15 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        SleepMateLog.add(this, "SleepMate最近任务被划掉；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；startAction=$lastStartAction；startId=$lastStartId；期望保持开启=${isProtectionDesired(this)}；监测循环活动=${foregroundMonitorJob?.isActive == true}；屏幕亮起=$screenInteractive；目标应用前台=$targetAppForeground；最近识别=$lastForegroundPackage；rootAction=${rootIntent?.action}")
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
+        SleepMateLog.add(this, "保护服务 onDestroy；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；lastStartAction=$lastStartAction；lastStartId=$lastStartId；期望保持开启=${isProtectionDesired(this)}；监测循环活动=${foregroundMonitorJob?.isActive == true}；说明=onDestroy本身无法区分系统回收、用户停止或其他销毁原因")
         running.value = false
+        startRequestPending.set(false)
         detectionJob?.cancel()
         cameraJob?.cancel()
         foregroundMonitorJob?.cancel()
@@ -536,12 +661,13 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         unregisterMotionSensor()
         try { unregisterReceiver(screenReceiver) } catch (_: Exception) { }
         cameraWindowId++
-        cameraProvider?.unbindAll()
+        // Stop new frames before marking the detector as closing. In-flight ML Kit
+        // Tasks retain ownership until their completion listener closes each proxy.
+        activeImageAnalysis?.clearAnalyzer()
         synchronized(detectorLock) {
-            detector?.close()
-            detector = null
+            detectorClosing.set(true)
         }
-        cameraExecutor.shutdown()
+        closeDetectorIfIdle()
         super.onDestroy()
     }
 
@@ -571,7 +697,15 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     private fun updateNotification(message: String) {
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(message))
+        val instance = System.identityHashCode(this)
+        SleepMateLog.add(this, "通知刷新请求；instance=$instance；pid=${Process.myPid()}；内容=$message")
+        try {
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(message))
+            SleepMateLog.add(this, "通知刷新完成；instance=$instance；内容=$message")
+        } catch (e: Exception) {
+            SleepMateLog.add(this, "通知刷新失败；instance=$instance；异常=${e.javaClass.simpleName}: ${e.message}")
+            Log.e(TAG, "Notification update failed", e)
+        }
     }
 
     override fun onBind(intent: Intent): IBinder? {
@@ -581,10 +715,26 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     companion object {
         val running = MutableStateFlow(false)
+        private val startRequestPending = AtomicBoolean(false)
+        private const val PREFERENCES_NAME = "sleepmate_protection_state"
+        private const val KEY_PROTECTION_DESIRED = "protection_enabled"
+
+        private fun isProtectionDesired(context: Context): Boolean =
+            context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+                .getBoolean(KEY_PROTECTION_DESIRED, false)
+
+        private fun setProtectionDesired(context: Context, enabled: Boolean) {
+            context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_PROTECTION_DESIRED, enabled)
+                .apply()
+        }
 
         const val ACTION_START = "com.sleepmate.app.START"
         const val ACTION_STOP = "com.sleepmate.app.STOP"
+        const val ACTION_RECOVER = "com.sleepmate.app.RECOVER"
         const val ACTION_SELECTION_CHANGED = "com.sleepmate.app.SELECTION_CHANGED"
+        private const val ACTION_RECONCILE = "com.sleepmate.app.RECONCILE"
         private const val ACTIVE_FOREGROUND_POLL_MS = 2500L
         private const val IDLE_FOREGROUND_POLL_MS = 4500L
         private const val MOTION_SENSOR_SAMPLING_PERIOD_US = 300_000
@@ -595,19 +745,45 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         private const val INITIAL_USAGE_EVENT_WINDOW_MS = 10_000L
         private const val USAGE_EVENT_OVERLAP_MS = 5_000L
         private const val MAX_REMEMBERED_USAGE_EVENTS = 128
+        private const val MONITOR_HEARTBEAT_LOG_INTERVAL_MS = 60_000L
         private const val CAMERA_WINDOW_MS = 30_000L
         private const val MOVEMENT_THRESHOLD = 1.0f
         private const val TAG = "SleepMate"
         private const val CHANNEL_ID = "sleepguard_protection"
         private const val NOTIFICATION_ID = 1001
 
+        private fun requestServiceStart(context: Context, action: String) {
+            if (action == ACTION_RECONCILE) {
+                if (!running.value) return
+            } else if (running.value) {
+                return
+            }
+            if (!startRequestPending.compareAndSet(false, true)) return
+            val intent = Intent(context, ProtectionService::class.java).setAction(action)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
+                else context.startService(intent)
+            } catch (e: Exception) {
+                startRequestPending.set(false)
+                throw e
+            }
+        }
+
+        // User-initiated start: persist the user's intent before starting protection.
         fun start(context: Context) {
-            val intent = Intent(context, ProtectionService::class.java).setAction(ACTION_START)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
-            else context.startService(intent)
+            setProtectionDesired(context, true)
+            requestServiceStart(context, ACTION_START)
+        }
+
+        // Recovery never changes the saved preference; it only reconciles a missing service.
+        fun restoreIfEnabled(context: Context) {
+            if (!isProtectionDesired(context)) return
+            requestServiceStart(context, if (running.value) ACTION_RECONCILE else ACTION_RECOVER)
         }
 
         fun stop(context: Context) {
+            setProtectionDesired(context, false)
+            startRequestPending.set(false)
             context.stopService(Intent(context, ProtectionService::class.java))
         }
     }
