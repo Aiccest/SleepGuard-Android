@@ -40,8 +40,9 @@ jobs:
           fi
 
       - name: Validate release signing configuration
-        if: ${{ secrets.SLEEPMATE_KEYSTORE_BASE64 != '' }}
+        if: env.HAS_RELEASE_SIGNING == 'true'
         env:
+          HAS_RELEASE_SIGNING: ${{ secrets.SLEEPMATE_KEYSTORE_BASE64 != '' }}
           KEYSTORE_PATH: ${{ runner.temp }}/sleepmate-release.jks
           STORE_PASSWORD: ${{ secrets.SLEEPMATE_STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.SLEEPMATE_KEY_ALIAS }}
@@ -74,8 +75,8 @@ jobs:
             find app/build/outputs/apk -maxdepth 4 -type f -print || true
             exit 1
           fi
-          printf 'Packaging release APK(s):\n'
-          printf ' - %s\n' "${release_apks[@]}"
+          printf 'Packaging release APK(s):\\n'
+          printf ' - %s\\n' "${release_apks[@]}"
           zip -j dist/SleepMate-release-apk.zip "${release_apks[@]}"
 
       - name: Upload APK artifacts
