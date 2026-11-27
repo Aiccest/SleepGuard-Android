@@ -73,29 +73,25 @@ jobs:
           SLEEPMATE_KEY_PASSWORD: ${{ secrets.SLEEPMATE_KEY_PASSWORD }}
         run: gradle --no-daemon assembleDebug assembleRelease
 
-      # Package the actual APK output name; unsigned release builds use a different suffix.
-      - name: Package release APK
+      # Publish one clearly named Release APK; GitHub stores the artifact as a ZIP.
+      - name: Prepare single Release APK
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist
           mapfile -t release_apks < <(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print | sort)
-          if [ "${#release_apks[@]}" -eq 0 ]; then
-            echo "No release APK was produced."
+          if [ "${#release_apks[@]}" -ne 1 ]; then
+            echo "Expected exactly one Release APK, found ${#release_apks[@]}."
             find app/build/outputs/apk -maxdepth 4 -type f -print || true
             exit 1
           fi
-          printf 'Packaging release APK(s):\\n'
-          printf ' - %s\\n' "${release_apks[@]}"
-          zip -j dist/SleepMate-release-apk.zip "${release_apks[@]}"
+          cp "${release_apks[0]}" dist/SleepMate-release.apk
+          ls -lh dist/SleepMate-release.apk
 
-      - name: Upload APK artifacts
+      - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: SleepMate-APKs
-          path: |
-            app/build/outputs/apk/debug/*.apk
-            app/build/outputs/apk/release/*.apk
-            dist/SleepMate-release-apk.zip
+          name: SleepMate-release-APK
+          path: dist/SleepMate-release.apk
           if-no-files-found: error
           retention-days: 14
