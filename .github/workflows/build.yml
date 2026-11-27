@@ -36,6 +36,7 @@ jobs:
         run: |
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/sleepmate-release.jks"
+            test -s "$RUNNER_TEMP/sleepmate-release.jks"
           fi
 
       - name: Build debug and release APKs
@@ -47,17 +48,27 @@ jobs:
         run: gradle --no-daemon assembleDebug assembleRelease
 
       - name: Package release APK
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p dist
-          zip -j dist/SleepMate-release-apk.zip app/build/outputs/apk/release/app-release.apk
+          mapfile -t release_apks < <(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print | sort)
+          if [ "${#release_apks[@]}" -eq 0 ]; then
+            echo "No release APK was produced."
+            find app/build/outputs/apk -maxdepth 4 -type f -print || true
+            exit 1
+          fi
+          printf 'Packaging release APK(s):\n'
+          printf ' - %s\n' "${release_apks[@]}"
+          zip -j dist/SleepMate-release-apk.zip "${release_apks[@]}"
 
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
           name: SleepMate-APKs
           path: |
-            app/build/outputs/apk/debug/app-debug.apk
-            app/build/outputs/apk/release/app-release.apk
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/release/*.apk
             dist/SleepMate-release-apk.zip
           if-no-files-found: error
           retention-days: 14
