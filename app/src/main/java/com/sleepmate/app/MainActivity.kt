@@ -71,11 +71,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         refreshPermissions()
         setContent { SleepGuardApp(this) }
+        ProtectionService.restoreIfEnabled(this)
     }
 
     override fun onResume() {
         super.onResume()
         refreshPermissions()
+        ProtectionService.restoreIfEnabled(this)
     }
 
     fun refreshPermissions() {
