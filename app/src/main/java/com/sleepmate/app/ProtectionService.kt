@@ -41,6 +41,7 @@ import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.LinkedHashSet
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -50,6 +51,9 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     @Volatile private var detector: FaceDetector? = null
     private val detectorLock = Any()
+    private val detectorClosing = AtomicBoolean(false)
+    private val inFlightDetectorTasks = AtomicInteger(0)
+    @Volatile private var activeImageAnalysis: ImageAnalysis? = null
     private lateinit var sensorManager: SensorManager
     private lateinit var usageStatsManager: UsageStatsManager
 
@@ -424,6 +428,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
             analysis = imageAnalysis
+            activeImageAnalysis = imageAnalysis
             imageAnalysis.setAnalyzer(cameraExecutor) { proxy -> analyzeFrame(proxy, windowId) }
             withContext(Dispatchers.Main) {
                 resolvedProvider.bindToLifecycle(this@ProtectionService, CameraSelector.DEFAULT_FRONT_CAMERA, imageAnalysis)
@@ -438,19 +443,45 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 analysis?.let { useCase ->
                     useCase.clearAnalyzer()
                     provider?.unbind(useCase)
+                    if (activeImageAnalysis === useCase) activeImageAnalysis = null
                 }
             }
         }
     }
 
-    private fun getOrCreateFaceDetector(): FaceDetector = synchronized(detectorLock) {
-        detector ?: run {
+    // A detector task outlives the coroutine that opened the camera window. Keep
+    // the detector and its executor alive until every submitted ML Kit Task completes.
+    private fun beginDetectorTask(): FaceDetector? = synchronized(detectorLock) {
+        if (detectorClosing.get()) return@synchronized null
+        val activeDetector = detector ?: run {
             val options = FaceDetectorOptions.Builder()
                 .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
                 .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
                 .enableTracking()
                 .build()
             FaceDetection.getClient(options).also { detector = it }
+        }
+        inFlightDetectorTasks.incrementAndGet()
+        activeDetector
+    }
+
+    private fun finishDetectorTask() {
+        val remaining = inFlightDetectorTasks.decrementAndGet()
+        if (remaining < 0) {
+            inFlightDetectorTasks.set(0)
+            Log.e(TAG, "Detector task counter underflow")
+        }
+        closeDetectorIfIdle()
+    }
+
+    private fun closeDetectorIfIdle() {
+        synchronized(detectorLock) {
+            if (!detectorClosing.get() || inFlightDetectorTasks.get() != 0) return
+            detector?.close()
+            detector = null
+            // shutdown() drains already queued analyzer/completion callbacks; it does
+            // not interrupt an ML Kit operation that is still running.
+            cameraExecutor.shutdown()
         }
     }
 
@@ -459,14 +490,20 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             proxy.close()
             return
         }
+        val activeDetector = beginDetectorTask()
+        if (activeDetector == null) {
+            proxy.close()
+            return
+        }
         try {
             val mediaImage = proxy.image
             if (mediaImage == null) {
                 proxy.close()
+                finishDetectorTask()
                 return
             }
             val image = InputImage.fromMediaImage(mediaImage, proxy.imageInfo.rotationDegrees)
-            getOrCreateFaceDetector().process(image)
+            activeDetector.process(image)
                 .addOnSuccessListener(cameraExecutor) { faces ->
                     if (windowId != cameraWindowId || !screenInteractive || !targetAppForeground || triggered.get()) return@addOnSuccessListener
                     validFrameAnalyzedInWindow = true
@@ -491,10 +528,20 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                         eyesClosedSince = 0L
                     }
                 }
-                .addOnCompleteListener { proxy.close() }
+                .addOnCompleteListener(cameraExecutor) {
+                    try {
+                        proxy.close()
+                    } finally {
+                        finishDetectorTask()
+                    }
+                }
         } catch (_: Exception) {
-            // InputImage creation or detector submission can fail before a Task exists.
-            proxy.close()
+            // Submission can fail before a Task is returned; release both resources.
+            try {
+                proxy.close()
+            } finally {
+                finishDetectorTask()
+            }
         }
     }
 
@@ -614,11 +661,13 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         unregisterMotionSensor()
         try { unregisterReceiver(screenReceiver) } catch (_: Exception) { }
         cameraWindowId++
+        // Stop new frames before marking the detector as closing. In-flight ML Kit
+        // Tasks retain ownership until their completion listener closes each proxy.
+        activeImageAnalysis?.clearAnalyzer()
         synchronized(detectorLock) {
-            detector?.close()
-            detector = null
+            detectorClosing.set(true)
         }
-        cameraExecutor.shutdown()
+        closeDetectorIfIdle()
         super.onDestroy()
     }
 
