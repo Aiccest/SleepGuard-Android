@@ -60,6 +60,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private var targetAppForeground = false
     private var lastForegroundPackage: String? = null
     private var lastUsageEventQueryAt = 0L
+    private var lastForegroundEventTimestamp = 0L
     private val processedUsageEvents = LinkedHashSet<String>()
     private var foregroundMonitorJob: Job? = null
     private var lastMonitorHeartbeatAt = 0L
@@ -223,11 +224,11 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         foregroundMonitorJob = null
     }
 
-    private fun refreshForegroundState() {
-        if (!screenInteractive) return
-        if (!hasUsageAccess()) { setTargetAppForeground(false); return }
+    private fun refreshForegroundState(): Boolean {
+        if (!screenInteractive) return false
+        if (!hasUsageAccess()) { setTargetAppForeground(false); return false }
         val selected = MediaAppPreferences.getSelectedPackages(this)
-        if (selected.isEmpty()) { setTargetAppForeground(false); return }
+        if (selected.isEmpty()) { setTargetAppForeground(false); return false }
         val now = System.currentTimeMillis()
         // Initialize from a short recent window; thereafter query incrementally with
         // a small overlap so delayed UsageEvents are less likely to be missed.
@@ -241,7 +242,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         } catch (e: Exception) {
             SleepMateLog.add(this, "UsageStats前台事件查询失败：${e.javaClass.simpleName}: ${e.message}")
             Log.e(TAG, "UsageStats queryEvents failed", e)
-            return
+            return false
         }
         val event = UsageEvents.Event()
         var foreground = lastForegroundPackage
@@ -254,8 +255,12 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 if (oldest != null) processedUsageEvents.remove(oldest)
             }
             when (event.eventType) {
-                UsageEvents.Event.MOVE_TO_FOREGROUND, UsageEvents.Event.ACTIVITY_RESUMED ->
+                UsageEvents.Event.MOVE_TO_FOREGROUND, UsageEvents.Event.ACTIVITY_RESUMED -> {
                     foreground = event.packageName
+                    if (event.timeStamp > lastForegroundEventTimestamp) {
+                        lastForegroundEventTimestamp = event.timeStamp
+                    }
+                }
                 UsageEvents.Event.MOVE_TO_BACKGROUND, UsageEvents.Event.ACTIVITY_PAUSED, UsageEvents.Event.ACTIVITY_STOPPED ->
                     if (foreground == event.packageName) foreground = null
             }
@@ -267,6 +272,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             lastLoggedForegroundPackage = foreground
         }
         setTargetAppForeground(foreground in selected)
+        return true
     }
 
     private fun setTargetAppForeground(active: Boolean) {
@@ -585,6 +591,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             // that the launcher is actually foreground, so we do not lock over a
             // still-active media browser merely because startActivity returned.
             homeIntent.component = homeHandler
+            val homeRequestAt = System.currentTimeMillis()
             updateNotification("已确认睡眠；正在先返回桌面")
             startActivity(homeIntent)
             Log.i(TAG, "HOME_DIAG: explicit launcher startActivity returned without exception")
@@ -595,9 +602,11 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             for (checkAtMs in listOf(500L, 1500L, 3000L)) {
                 delay(checkAtMs - previousCheckAt)
                 previousCheckAt = checkAtMs
-                refreshForegroundState()
-                returnedToLauncher = lastForegroundPackage == homeHandler.packageName
-                val message = "发出HOME请求后${checkAtMs}毫秒：前台=$lastForegroundPackage；默认桌面=${homeHandler.packageName}；已回桌面=$returnedToLauncher；屏幕亮起=$screenInteractive"
+                val usageQuerySucceeded = refreshForegroundState()
+                val freshLauncherEvent = lastForegroundEventTimestamp > homeRequestAt
+                returnedToLauncher = usageQuerySucceeded && freshLauncherEvent &&
+                    lastForegroundPackage == homeHandler.packageName
+                val message = "发出HOME请求后${checkAtMs}毫秒：前台=$lastForegroundPackage；默认桌面=${homeHandler.packageName}；UsageStats查询成功=$usageQuerySucceeded；HOME请求后新前台事件=$freshLauncherEvent；已回桌面=$returnedToLauncher；屏幕亮起=$screenInteractive"
                 Log.i(TAG, "HOME_DIAG: $message")
                 SleepMateLog.add(this, message)
                 if (returnedToLauncher || !screenInteractive) break
