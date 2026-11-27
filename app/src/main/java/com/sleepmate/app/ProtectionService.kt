@@ -56,6 +56,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private var lastUsageEventQueryAt = 0L
     private val processedUsageEvents = LinkedHashSet<String>()
     private var foregroundMonitorJob: Job? = null
+    private var lastMonitorHeartbeatAt = 0L
+    private var lastLoggedForegroundPackage: String? = null
     private var sensorRegistered = false
     private var lastActivityAt = 0L
     private var stillSince = 0L
@@ -75,6 +77,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> {
+                    SleepMateLog.add(this@ProtectionService, "屏幕关闭广播；暂停前台应用监测")
                     screenInteractive = false
                     stopForegroundMonitor()
                     triggered.set(false)
@@ -90,6 +93,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     screenInteractive = true
+                    SleepMateLog.add(this@ProtectionService, "屏幕亮起广播；检查并恢复前台应用监测")
                     if (hasUsageAccess()) startForegroundMonitor()
                     refreshForegroundState()
                     resumeMonitoringIfEligible()
@@ -128,6 +132,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             return START_NOT_STICKY
         }
         running.value = true
+        SleepMateLog.add(this, "保护服务启动；action=${intent?.action ?: "系统重建"}；期望保持开启=${isProtectionDesired(this)}")
         startForeground(NOTIFICATION_ID, notification("睡眠保护已启动，正在等待监测条件"))
         if (intent?.action == ACTION_SELECTION_CHANGED) {
             refreshForegroundState()
@@ -149,16 +154,35 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     private fun startForegroundMonitor() {
-        if (!screenInteractive || foregroundMonitorJob?.isActive == true) return
+        if (!screenInteractive) {
+            SleepMateLog.add(this, "未启动前台监测循环：屏幕处于关闭状态")
+            return
+        }
+        if (foregroundMonitorJob?.isActive == true) return
+        lastMonitorHeartbeatAt = SystemClock.elapsedRealtime()
+        SleepMateLog.add(this, "前台应用监测循环已启动")
         foregroundMonitorJob = scope.launch {
             while (isActive) {
-                refreshForegroundState()
+                try {
+                    refreshForegroundState()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    SleepMateLog.add(this@ProtectionService, "前台监测循环异常，稍后继续：${e.javaClass.simpleName}: ${e.message}")
+                    Log.e(TAG, "Foreground monitor iteration failed", e)
+                }
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastMonitorHeartbeatAt >= MONITOR_HEARTBEAT_LOG_INTERVAL_MS) {
+                    lastMonitorHeartbeatAt = now
+                    SleepMateLog.add(this@ProtectionService, "前台监测心跳正常；目标应用前台=$targetAppForeground；最近识别=$lastForegroundPackage")
+                }
                 delay(if (targetAppForeground) ACTIVE_FOREGROUND_POLL_MS else IDLE_FOREGROUND_POLL_MS)
             }
         }
     }
 
     private fun stopForegroundMonitor() {
+        if (foregroundMonitorJob != null) SleepMateLog.add(this, "前台应用监测循环已请求停止/暂停")
         foregroundMonitorJob?.cancel()
         foregroundMonitorJob = null
     }
@@ -176,7 +200,13 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         } else {
             (lastUsageEventQueryAt - USAGE_EVENT_OVERLAP_MS).coerceAtLeast(0L)
         }
-        val events = usageStatsManager.queryEvents(eventWindowStart, now)
+        val events = try {
+            usageStatsManager.queryEvents(eventWindowStart, now)
+        } catch (e: Exception) {
+            SleepMateLog.add(this, "UsageStats前台事件查询失败：${e.javaClass.simpleName}: ${e.message}")
+            Log.e(TAG, "UsageStats queryEvents failed", e)
+            return
+        }
         val event = UsageEvents.Event()
         var foreground = lastForegroundPackage
         while (events.hasNextEvent()) {
@@ -196,12 +226,17 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         }
         lastUsageEventQueryAt = now
         lastForegroundPackage = foreground
+        if (lastLoggedForegroundPackage != foreground) {
+            SleepMateLog.add(this, "前台应用识别变化：${lastLoggedForegroundPackage ?: "无/未知"} → ${foreground ?: "无/未知"}；所选应用前台=${foreground in selected}")
+            lastLoggedForegroundPackage = foreground
+        }
         setTargetAppForeground(foreground in selected)
     }
 
     private fun setTargetAppForeground(active: Boolean) {
         if (targetAppForeground == active) return
         targetAppForeground = active
+        SleepMateLog.add(this, if (active) "所选监测应用进入前台；恢复睡眠检测" else "已离开全部所选监测应用；暂停睡眠检测")
         if (active) {
             lastActivityAt = SystemClock.elapsedRealtime()
             stillSince = 0L
@@ -533,7 +568,13 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        SleepMateLog.add(this, "SleepMate最近任务被划掉；服务仍在运行，检查前台监测状态")
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
+        SleepMateLog.add(this, "保护服务 onDestroy；服务进程内的前台监测循环将结束")
         running.value = false
         detectionJob?.cancel()
         cameraJob?.cancel()
@@ -616,6 +657,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         private const val INITIAL_USAGE_EVENT_WINDOW_MS = 10_000L
         private const val USAGE_EVENT_OVERLAP_MS = 5_000L
         private const val MAX_REMEMBERED_USAGE_EVENTS = 128
+        private const val MONITOR_HEARTBEAT_LOG_INTERVAL_MS = 60_000L
         private const val CAMERA_WINDOW_MS = 30_000L
         private const val MOVEMENT_THRESHOLD = 1.0f
         private const val TAG = "SleepMate"
