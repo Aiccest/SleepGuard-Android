@@ -104,6 +104,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     override fun onCreate() {
         super.onCreate()
+        SleepMateLog.add(this, "服务实例创建；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}")
         createNotificationChannel()
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
@@ -132,7 +133,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             return START_NOT_STICKY
         }
         running.value = true
-        SleepMateLog.add(this, "保护服务启动；action=${intent?.action ?: "系统重建"}；期望保持开启=${isProtectionDesired(this)}")
+        SleepMateLog.add(this, "保护服务收到启动请求；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；action=${intent?.action ?: "系统重建"}；期望保持开启=${isProtectionDesired(this)}；监测循环活动=${foregroundMonitorJob?.isActive == true}")
         startForeground(NOTIFICATION_ID, notification("睡眠保护已启动，正在等待监测条件"))
         if (intent?.action == ACTION_SELECTION_CHANGED) {
             refreshForegroundState()
@@ -174,7 +175,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastMonitorHeartbeatAt >= MONITOR_HEARTBEAT_LOG_INTERVAL_MS) {
                     lastMonitorHeartbeatAt = now
-                    SleepMateLog.add(this@ProtectionService, "前台监测心跳正常；目标应用前台=$targetAppForeground；最近识别=$lastForegroundPackage")
+                    SleepMateLog.add(this@ProtectionService, "前台监测心跳正常；instance=${System.identityHashCode(this@ProtectionService)}；pid=${Process.myPid()}；循环活动=${foregroundMonitorJob?.isActive == true}；屏幕亮起=$screenInteractive；目标应用前台=$targetAppForeground；最近识别=$lastForegroundPackage")
                 }
                 delay(if (targetAppForeground) ACTIVE_FOREGROUND_POLL_MS else IDLE_FOREGROUND_POLL_MS)
             }
@@ -569,12 +570,12 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        SleepMateLog.add(this, "SleepMate最近任务被划掉；服务仍在运行，检查前台监测状态")
+        SleepMateLog.add(this, "SleepMate最近任务被划掉；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；监测循环活动=${foregroundMonitorJob?.isActive == true}；屏幕亮起=$screenInteractive；目标应用前台=$targetAppForeground；最近识别=$lastForegroundPackage")
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
-        SleepMateLog.add(this, "保护服务 onDestroy；服务进程内的前台监测循环将结束")
+        SleepMateLog.add(this, "保护服务 onDestroy；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；监测循环活动=${foregroundMonitorJob?.isActive == true}；服务进程内的前台监测循环将结束")
         running.value = false
         detectionJob?.cancel()
         cameraJob?.cancel()
@@ -618,7 +619,15 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     private fun updateNotification(message: String) {
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(message))
+        val instance = System.identityHashCode(this)
+        SleepMateLog.add(this, "通知刷新请求；instance=$instance；pid=${Process.myPid()}；内容=$message")
+        try {
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(message))
+            SleepMateLog.add(this, "通知刷新完成；instance=$instance；内容=$message")
+        } catch (e: Exception) {
+            SleepMateLog.add(this, "通知刷新失败；instance=$instance；异常=${e.javaClass.simpleName}: ${e.message}")
+            Log.e(TAG, "Notification update failed", e)
+        }
     }
 
     override fun onBind(intent: Intent): IBinder? {
