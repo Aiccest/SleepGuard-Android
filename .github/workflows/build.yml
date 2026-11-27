@@ -54,8 +54,16 @@ jobs:
           test -n "$STORE_PASSWORD" || { echo "SLEEPMATE_STORE_PASSWORD is missing."; exit 1; }
           test -n "$KEY_ALIAS" || { echo "SLEEPMATE_KEY_ALIAS is missing."; exit 1; }
           test -n "$KEY_PASSWORD" || { echo "SLEEPMATE_KEY_PASSWORD is missing."; exit 1; }
+          echo "Checking keystore password..."
+          keytool -list -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" >/dev/null
+          echo "Keystore password is valid."
+          echo "Checking key alias..."
           keytool -list -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
-          echo "Keystore, store password, and key alias are valid."
+          echo "Key alias is valid."
+          echo "Checking private-key password..."
+          keytool -certreq -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" -keypass "$KEY_PASSWORD" -file "$RUNNER_TEMP/sleepmate-key-check.csr" >/dev/null
+          rm -f "$RUNNER_TEMP/sleepmate-key-check.csr"
+          echo "Private-key password is valid."
 
       - name: Build debug and release APKs
         env:
