@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      HAS_RELEASE_SIGNING: ${{ secrets.SLEEPMATE_KEYSTORE_BASE64 != '' }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -42,7 +44,6 @@ jobs:
       - name: Validate release signing configuration
         if: env.HAS_RELEASE_SIGNING == 'true'
         env:
-          HAS_RELEASE_SIGNING: ${{ secrets.SLEEPMATE_KEYSTORE_BASE64 != '' }}
           KEYSTORE_PATH: ${{ runner.temp }}/sleepmate-release.jks
           STORE_PASSWORD: ${{ secrets.SLEEPMATE_STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.SLEEPMATE_KEY_ALIAS }}
