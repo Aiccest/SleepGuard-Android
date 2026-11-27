@@ -1,13 +1,15 @@
-name: Build SleepMate debug APK
+name: Build SleepMate APKs
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "main", "feature/usage-access-sleepmate-redesign", "feature/power-saving-optimization" ]
+    branches: [ "main", "feature/usage-access-sleepmate-redesign", "feature/power-saving-optimization", "chore/release-privacy-cleanup" ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      HAS_RELEASE_SIGNING: ${{ secrets.SLEEPMATE_KEYSTORE_BASE64 != '' }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -30,13 +32,69 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build debug APK
-        run: gradle --no-daemon assembleDebug
+      - name: Prepare optional release signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SLEEPMATE_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/sleepmate-release.jks"
+            test -s "$RUNNER_TEMP/sleepmate-release.jks"
+          fi
 
-      - name: Upload APK
+      - name: Validate release signing configuration
+        if: env.HAS_RELEASE_SIGNING == 'true'
+        env:
+          KEYSTORE_PATH: ${{ runner.temp }}/sleepmate-release.jks
+          STORE_PASSWORD: ${{ secrets.SLEEPMATE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SLEEPMATE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.SLEEPMATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -s "$KEYSTORE_PATH" || { echo "Keystore file is missing or empty."; exit 1; }
+          test -n "$STORE_PASSWORD" || { echo "SLEEPMATE_STORE_PASSWORD is missing."; exit 1; }
+          test -n "$KEY_ALIAS" || { echo "SLEEPMATE_KEY_ALIAS is missing."; exit 1; }
+          test -n "$KEY_PASSWORD" || { echo "SLEEPMATE_KEY_PASSWORD is missing."; exit 1; }
+          echo "Checking keystore password..."
+          keytool -list -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" >/dev/null
+          echo "Keystore password is valid."
+          echo "Checking key alias..."
+          keytool -list -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+          echo "Key alias is valid."
+          echo "Checking private-key password..."
+          keytool -certreq -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" -keypass "$KEY_PASSWORD" -file "$RUNNER_TEMP/sleepmate-key-check.csr" >/dev/null
+          rm -f "$RUNNER_TEMP/sleepmate-key-check.csr"
+          echo "Private-key password is valid."
+
+      - name: Build debug and release APKs
+        env:
+          SLEEPMATE_KEYSTORE_PATH: ${{ secrets.SLEEPMATE_KEYSTORE_BASE64 != '' && format('{0}/sleepmate-release.jks', runner.temp) || '' }}
+          SLEEPMATE_STORE_PASSWORD: ${{ secrets.SLEEPMATE_STORE_PASSWORD }}
+          SLEEPMATE_KEY_ALIAS: ${{ secrets.SLEEPMATE_KEY_ALIAS }}
+          SLEEPMATE_KEY_PASSWORD: ${{ secrets.SLEEPMATE_KEY_PASSWORD }}
+        run: gradle --no-daemon assembleDebug assembleRelease
+
+      - name: Package release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          mapfile -t release_apks < <(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print | sort)
+          if [ "${#release_apks[@]}" -eq 0 ]; then
+            echo "No release APK was produced."
+            find app/build/outputs/apk -maxdepth 4 -type f -print || true
+            exit 1
+          fi
+          printf 'Packaging release APK(s):\\n'
+          printf ' - %s\\n' "${release_apks[@]}"
+          zip -j dist/SleepMate-release-apk.zip "${release_apks[@]}"
+
+      - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: SleepMate-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: SleepMate-APKs
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/release/*.apk
+            dist/SleepMate-release-apk.zip
           if-no-files-found: error
           retention-days: 14

@@ -4,9 +4,21 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val releaseStoreFile = System.getenv("SLEEPMATE_KEYSTORE_PATH")
+val releaseStorePassword = System.getenv("SLEEPMATE_STORE_PASSWORD")
+val releaseKeyAlias = System.getenv("SLEEPMATE_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("SLEEPMATE_KEY_PASSWORD")
+val hasReleaseSigning = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword
+).all { !it.isNullOrBlank() }
+
 android {
     namespace = "com.sleepmate.app"
     compileSdk = 35
+
     defaultConfig {
         applicationId = "com.sleepmate.app"
         minSdk = 28
@@ -14,11 +26,39 @@ android {
         versionCode = 4
         versionName = "1.3.0"
     }
+
+    signingConfigs {
+        create("release") {
+            if (hasReleaseSigning) {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            // Keep release behavior conservative until shrinking rules are verified
+            // against Compose, CameraX and ML Kit on supported devices.
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                null // Produces an unsigned APK for development/testing only.
+            }
+        }
+    }
+
     buildFeatures { compose = true }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
     kotlinOptions { jvmTarget = "17" }
 }
 
