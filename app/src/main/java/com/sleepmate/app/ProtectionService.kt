@@ -117,7 +117,13 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        startRequestPending.set(false)
         if (intent?.action == ACTION_STOP) {
+            setProtectionDesired(this, false)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (intent == null && !isProtectionDesired(this)) {
             stopSelf()
             return START_NOT_STICKY
         }
@@ -581,9 +587,24 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     companion object {
         val running = MutableStateFlow(false)
+        private val startRequestPending = AtomicBoolean(false)
+        private const val PREFERENCES_NAME = "sleepmate_protection_state"
+        private const val KEY_PROTECTION_DESIRED = "protection_enabled"
+
+        private fun isProtectionDesired(context: Context): Boolean =
+            context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+                .getBoolean(KEY_PROTECTION_DESIRED, false)
+
+        private fun setProtectionDesired(context: Context, enabled: Boolean) {
+            context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_PROTECTION_DESIRED, enabled)
+                .apply()
+        }
 
         const val ACTION_START = "com.sleepmate.app.START"
         const val ACTION_STOP = "com.sleepmate.app.STOP"
+        const val ACTION_RECOVER = "com.sleepmate.app.RECOVER"
         const val ACTION_SELECTION_CHANGED = "com.sleepmate.app.SELECTION_CHANGED"
         private const val ACTIVE_FOREGROUND_POLL_MS = 2500L
         private const val IDLE_FOREGROUND_POLL_MS = 4500L
@@ -601,13 +622,33 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         private const val CHANNEL_ID = "sleepguard_protection"
         private const val NOTIFICATION_ID = 1001
 
+        private fun requestServiceStart(context: Context, action: String) {
+            if (running.value || !startRequestPending.compareAndSet(false, true)) return
+            val intent = Intent(context, ProtectionService::class.java).setAction(action)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
+                else context.startService(intent)
+            } catch (e: Exception) {
+                startRequestPending.set(false)
+                throw e
+            }
+        }
+
+        // User-initiated start: persist the user's intent before starting protection.
         fun start(context: Context) {
-            val intent = Intent(context, ProtectionService::class.java).setAction(ACTION_START)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
-            else context.startService(intent)
+            setProtectionDesired(context, true)
+            requestServiceStart(context, ACTION_START)
+        }
+
+        // Recovery never changes the saved preference; it only reconciles a missing service.
+        fun restoreIfEnabled(context: Context) {
+            if (!isProtectionDesired(context) || running.value) return
+            requestServiceStart(context, ACTION_RECOVER)
         }
 
         fun stop(context: Context) {
+            setProtectionDesired(context, false)
+            startRequestPending.set(false)
             context.stopService(Intent(context, ProtectionService::class.java))
         }
     }
