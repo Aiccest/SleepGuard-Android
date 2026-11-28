@@ -638,8 +638,25 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             }
         } catch (e: Exception) {
             Log.e(TAG, "HOME_DIAG: launcher-first protection failed: ${e.javaClass.simpleName}: ${e.message}", e)
-            SleepMateLog.add(this, "先返回桌面流程异常：${e.javaClass.simpleName}: ${e.message}；本次不执行锁屏")
-            updateNotification("返回桌面失败；本次暂不锁屏，请查看诊断日志")
+            SleepMateLog.add(this, "先返回桌面流程异常：${e.javaClass.simpleName}: ${e.message}；返回桌面失败不作为阻止锁屏的条件")
+            if (!screenInteractive || !power.isInteractive) {
+                SleepMateLog.add(this, "返回桌面流程异常后检测到屏幕已关闭；不重复执行锁屏")
+                return
+            }
+            if (adminActive) {
+                try {
+                    SleepMateLog.add(this, "返回桌面流程发生异常；设备管理员已启用且屏幕仍亮，继续执行设备管理员锁屏")
+                    updateNotification("返回桌面失败；继续锁定屏幕")
+                    dpm.lockNow()
+                } catch (lockError: Exception) {
+                    Log.e(TAG, "HOME_DIAG: fallback device-admin lock failed: ${lockError.javaClass.simpleName}: ${lockError.message}", lockError)
+                    SleepMateLog.add(this, "返回桌面异常后的补偿锁屏失败：${lockError.javaClass.simpleName}: ${lockError.message}")
+                    updateNotification("返回桌面和自动锁屏均失败，请查看诊断日志")
+                }
+            } else {
+                SleepMateLog.add(this, "返回桌面流程发生异常；设备管理员未启用，无法自动锁屏")
+                updateNotification("返回桌面失败；设备管理员未启用，无法自动锁屏")
+            }
         }
     }
 
