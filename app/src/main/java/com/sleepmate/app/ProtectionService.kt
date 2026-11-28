@@ -36,6 +36,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.core.CameraSelector
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
+import androidx.lifecycle.Observer
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.Face
@@ -486,6 +487,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         val windowId = ++cameraWindowId
         var analysis: ImageAnalysis? = null
         var provider: ProcessCameraProvider? = null
+        var cameraStateObserver: Observer<CameraState>? = null
+        var boundCameraForState: androidx.camera.core.Camera? = null
         try {
             val cameraPermissionGranted = checkSelfPermission(android.Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
             SleepMateLog.add(this, "摄像头审计：准备获取CameraProvider；window=$windowId；CAMERA权限已授权=$cameraPermissionGranted")
@@ -513,6 +516,14 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             val boundCamera = withContext(Dispatchers.Main) {
                 resolvedProvider.bindToLifecycle(this@ProtectionService, CameraSelector.DEFAULT_FRONT_CAMERA, imageAnalysis)
             }
+            boundCameraForState = boundCamera
+            val stateObserver = Observer<CameraState> { state ->
+                SleepMateLog.add(this@ProtectionService, "摄像头审计：CameraState变化；window=$windowId；state=${state.type}；error=${state.error?.code}:${state.error?.cause?.javaClass?.simpleName}")
+            }
+            cameraStateObserver = stateObserver
+            withContext(Dispatchers.Main) {
+                boundCamera.cameraInfo.cameraState.observe(this@ProtectionService, stateObserver)
+            }
             val initialCameraState = boundCamera.cameraInfo.cameraState.value
             SleepMateLog.add(this, "摄像头审计：bindToLifecycle已返回；window=$windowId；cameraState=${initialCameraState?.type}；cameraError=${initialCameraState?.error?.code}:${initialCameraState?.error?.cause?.javaClass?.simpleName}；resolution=${imageAnalysis.resolutionInfo?.resolution}")
             delay(CAMERA_WINDOW_MS)
@@ -524,6 +535,11 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             // analyzer and use case have been detached. Never unbind another window's use cases.
             if (cameraWindowId == windowId) cameraWindowId++
             withContext(NonCancellable + Dispatchers.Main) {
+                val observer = cameraStateObserver
+                val camera = boundCameraForState
+                if (observer != null && camera != null) {
+                    camera.cameraInfo.cameraState.removeObserver(observer)
+                }
                 analysis?.let { useCase ->
                     useCase.clearAnalyzer()
                     provider?.unbind(useCase)
