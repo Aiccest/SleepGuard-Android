@@ -7,12 +7,10 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.graphics.Rect
 import android.graphics.ImageFormat
-import android.hardware.camera2.params.StreamConfigurationMap
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
-import android.util.Size
-import android.media.YuvImage
+import android.graphics.YuvImage
 import androidx.camera.core.ImageProxy
 import java.io.ByteArrayOutputStream
 import java.io.File
