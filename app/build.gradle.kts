@@ -1,6 +1,3 @@
-import java.io.File
-import java.net.URL
-import java.security.MessageDigest
 
 plugins {
     id("com.android.application")
