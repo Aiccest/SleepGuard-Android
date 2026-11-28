@@ -554,22 +554,30 @@ private fun AboutLine(title: String, value: String) {
 @Composable
 private fun LogsScreen(activity: MainActivity, onBack: () -> Unit) {
     var entries by remember { mutableStateOf(SleepMateLog.read(activity)) }
+    var earOnly by rememberSaveable { mutableStateOf(false) }
+    val visibleEntries = if (earOnly) entries.filter { it.contains("[EAR_TEST]") } else entries
     Column(Modifier.fillMaxSize()) {
         PageHeader("运行日志", onBack)
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { earOnly = false }) { Text("全部日志") }
+            OutlinedButton(onClick = { earOnly = true }) { Text("EAR测试记录") }
             OutlinedButton(onClick = { entries = SleepMateLog.read(activity) }) { Text("刷新") }
             OutlinedButton(onClick = {
                 val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                 clipboard.setPrimaryClip(android.content.ClipData.newPlainText("SleepMate运行日志", entries.joinToString("\n")))
                 android.widget.Toast.makeText(activity, "日志已复制", android.widget.Toast.LENGTH_SHORT).show()
-            }, enabled = entries.isNotEmpty()) { Text("复制日志") }
+            }, enabled = visibleEntries.isNotEmpty()) { Text(if (earOnly) "复制EAR记录" else "复制日志") }
             OutlinedButton(onClick = { SleepMateLog.clear(activity); entries = emptyList() }) { Text("清空") }
         }
-        Text("日志保存在本机，仅保留最近300条。用于排查前台应用识别、监测循环异常、自动恢复和返回桌面问题；复现问题后点刷新，再复制发给我。", Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall)
+        Text(
+            if (earOnly) "EAR测试记录只采样少量真实摄像头帧，包含左右眼轮廓点坐标和原始EAR值。只用于校验点位与阈值，不参与睡眠判断。"
+            else "日志保存在本机，仅保留最近300条。用于排查前台应用识别、监测循环异常、自动恢复、返回桌面及EAR轮廓数据；复现问题后点刷新，再复制发给我。",
+            Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall
+        )
         HorizontalDivider()
-        if (entries.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("暂无日志") }
+        if (visibleEntries.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(if (earOnly) "暂无EAR测试记录；启动保护并让摄像头识别到人脸后再刷新" else "暂无日志") }
         else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
-            items(entries.reversed()) { line ->
+            items(visibleEntries.reversed()) { line ->
                 Text(line, Modifier.fillMaxWidth().padding(vertical = 5.dp), style = MaterialTheme.typography.bodySmall)
                 HorizontalDivider()
             }
