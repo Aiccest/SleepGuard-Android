@@ -31,6 +31,25 @@ SleepMate 是一款面向 Android 的开源睡眠保护与省电应用。用户�
 6. 未确认睡眠时，后续复查间隔按 15、20、25、30 分钟安排，之后每 30 分钟复查。
 7. 用户离开全部所选应用、屏幕熄灭或设备明显移动时，停止或暂停相应检测；设备移动会重置无活动计时。
 
+## 人脸二次验证实验（实验分支）
+
+本分支在原有 ML Kit 候选人脸检测之后，加入 MediaPipe Face Landmarker 进行同帧面部关键点验证。ML Kit 候选框不会单独被视为可靠人脸；还需检查面部网格与候选框重叠，以及双眼、鼻尖、上下唇的相对位置和几何关系。验证通过后才允许原有 A/B/C 逻辑使用该人脸及 ML Kit 双眼概率。
+
+- 人脸宽度低于输入画面宽度的 5% 时拒绝采纳。
+- 5% 至 8% 区间执行更严格的眼间距和五官相对位置检查；8% 以上执行常规结构检查。
+- 这些百分比是当前实验阈值，尚未通过不同手机、距离、角度和侧脸场景校准，不代表通用识别保证。
+- MediaPipe 使用随 APK 打包的 `face_landmarker.task`，运行时从本地 assets 加载。模型构建时下载并校验 SHA-256；App 不需要为模型下载增加网络权限。
+- 摄像头帧、面部关键点及检测结果仅在设备内存中处理；本实现不上传图像或人脸数据。
+- MediaPipe 验证初始化或处理失败时，本轮不满足 B/C 的有效分析条件，避免将模型故障误判成无人脸。
+
+### 第三方组件与许可证
+
+- [MediaPipe Tasks Vision](https://github.com/google-ai-edge/mediapipe)：Apache License 2.0。SleepMate 使用 Face Landmarker Android Tasks API 和官方模型资产。
+- [Google ML Kit Face Detection](https://developers.google.com/ml-kit/vision/face-detection)：Google ML Kit Android SDK，用于第一阶段候选人脸检测及双眼睁开概率。
+- [CameraX](https://developer.android.com/jetpack/androidx/camera)：AndroidX CameraX，用于前置摄像头帧采集。
+
+第三方组件各自适用其上游许可证和服务条款；SleepMate 自身仍采用 GPL-3.0-only。分发时应同时保留相应第三方许可声明。
+
 ## Android 平台限制
 
 SleepMate 不应承诺 Android 系统无法保证的行为：
