@@ -101,6 +101,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     @Volatile private var cameraLastFrameArrivalElapsedNs = 0L
     @Volatile private var cameraMaxFrameGapMs = 0L
     @Volatile private var cameraDiagnosticFrameSaved = false
+    @Volatile private var faceValidationFailedInWindow = false
     private var serviceCreatedAtElapsed = 0L
     private var consecutiveOpenEyeChecks = 0
     private val triggered = AtomicBoolean(false)
@@ -487,6 +488,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         cameraLastFrameArrivalElapsedNs = 0L
         cameraMaxFrameGapMs = 0L
         cameraDiagnosticFrameSaved = false
+        faceValidationFailedInWindow = false
         val windowId = ++cameraWindowId
         var analysis: ImageAnalysis? = null
         var provider: ProcessCameraProvider? = null
@@ -530,7 +532,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             val initialCameraState = boundCamera.cameraInfo.cameraState.value
             SleepMateLog.add(this, "摄像头审计：bindToLifecycle已返回；window=$windowId；cameraState=${initialCameraState?.type}；cameraError=${initialCameraState?.error?.code}:${initialCameraState?.error?.cause?.javaClass?.simpleName}；resolution=${imageAnalysis.resolutionInfo?.resolution}")
             delay(CAMERA_WINDOW_MS)
-            val result = Triple(faceDetectedInWindow, validFrameAnalyzedInWindow, eyeStateDetectedInWindow)
+            val result = Triple(faceDetectedInWindow, validFrameAnalyzedInWindow && !faceValidationFailedInWindow, eyeStateDetectedInWindow)
             SleepMateLog.add(this, "摄像头审计：30秒窗口结束；window=$windowId；收到帧数=$cameraFramesReceived；重复时间戳帧=$cameraDuplicateTimestampFrames；分析成功帧=$analyzedFrameCount；首帧时间戳=$cameraFirstFrameTimestampNs；末帧时间戳=$cameraLastFrameTimestampNs；最大帧间隔=${cameraMaxFrameGapMs}毫秒；可靠脸=${result.first}；有效分析=${result.second}；取得眼概率=${result.third}")
             result
         } finally {
@@ -685,7 +687,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                         val bitmap = proxy.toBitmap()
                         getFaceValidationEngine().validateFrame(bitmap, faces, orientedWidth, orientedHeight)
                     } catch (validationError: Exception) {
-                        SleepMateLog.add(this@ProtectionService, "MediaPipe验证失败；本帧不采纳任何候选脸，且不将模型异常当作无人脸；异常=${validationError.javaClass.simpleName}:${validationError.message}")
+                        faceValidationFailedInWindow = true
+                        SleepMateLog.add(this@ProtectionService, "MediaPipe验证失败；本轮不作B/C睡眠判断；异常=${validationError.javaClass.simpleName}:${validationError.message}")
                         Log.e(TAG, "MediaPipe face validation failed", validationError)
                         emptySet()
                     }
