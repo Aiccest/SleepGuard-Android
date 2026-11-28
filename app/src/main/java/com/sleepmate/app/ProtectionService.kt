@@ -28,7 +28,6 @@ import android.util.Log
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
-import androidx.camera.core.toBitmap
 import android.view.KeyEvent
 import androidx.camera.core.CameraState
 import androidx.camera.core.ImageAnalysis
@@ -624,6 +623,10 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             if (!detectorClosing.get() || inFlightDetectorTasks.get() != 0) return
             detector?.close()
             detector = null
+            synchronized(faceValidationLock) {
+                faceValidationEngine?.close()
+                faceValidationEngine = null
+            }
             // shutdown() drains already queued analyzer/completion callbacks; it does
             // not interrupt an ML Kit operation that is still running.
             cameraExecutor.shutdown()
@@ -685,7 +688,11 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     val orientedHeight = if (rotation == 90 || rotation == 270) proxy.width else proxy.height
                     val mpAcceptedIndexes = try {
                         val bitmap = proxy.toBitmap()
-                        getFaceValidationEngine().validateFrame(bitmap, faces, orientedWidth, orientedHeight)
+                        try {
+                            getFaceValidationEngine().validateFrame(bitmap, faces, orientedWidth, orientedHeight)
+                        } finally {
+                            bitmap.recycle()
+                        }
                     } catch (validationError: Exception) {
                         faceValidationFailedInWindow = true
                         SleepMateLog.add(this@ProtectionService, "MediaPipe验证失败；本轮不作B/C睡眠判断；异常=${validationError.javaClass.simpleName}:${validationError.message}")
@@ -933,10 +940,6 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             detectorClosing.set(true)
         }
         closeDetectorIfIdle()
-        synchronized(faceValidationLock) {
-            faceValidationEngine?.close()
-            faceValidationEngine = null
-        }
         super.onDestroy()
     }
 
