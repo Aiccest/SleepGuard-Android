@@ -2,6 +2,7 @@ package com.sleepmate.app
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Matrix
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.core.RunningMode
@@ -29,14 +30,20 @@ internal class FaceValidationEngine(context: Context) : AutoCloseable {
         landmarker = FaceLandmarker.createFromOptions(context.applicationContext, options)
     }
 
-    fun validateFrame(bitmap: Bitmap, candidates: List<Face>, frameWidth: Int, frameHeight: Int): Set<Int> {
+    fun validateFrame(bitmap: Bitmap, rotationDegrees: Int, candidates: List<Face>, frameWidth: Int, frameHeight: Int): Set<Int> {
         if (candidates.isEmpty() || frameWidth <= 0 || frameHeight <= 0) return emptySet()
         val safeBitmap = if (bitmap.config == Bitmap.Config.ARGB_8888) bitmap else bitmap.copy(Bitmap.Config.ARGB_8888, false)
-        val mpImage = BitmapImageBuilder(safeBitmap).build()
+        val normalizedRotation = ((rotationDegrees % 360) + 360) % 360
+        val orientedBitmap = if (normalizedRotation == 0) safeBitmap else Bitmap.createBitmap(
+            safeBitmap, 0, 0, safeBitmap.width, safeBitmap.height,
+            Matrix().apply { postRotate(normalizedRotation.toFloat()) }, true
+        )
+        val mpImage = BitmapImageBuilder(orientedBitmap).build()
         val result = try {
             landmarker.detect(mpImage)
         } finally {
             mpImage.close()
+            if (orientedBitmap !== safeBitmap) orientedBitmap.recycle()
             if (safeBitmap !== bitmap) safeBitmap.recycle()
         }
         val landmarks = result.faceLandmarks().firstOrNull() ?: return emptySet()
