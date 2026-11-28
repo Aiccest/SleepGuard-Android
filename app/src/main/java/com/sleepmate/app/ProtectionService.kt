@@ -33,6 +33,8 @@ import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.Face
+import com.google.mlkit.vision.face.FaceLandmark
 import com.google.mlkit.vision.face.FaceDetector
 import com.google.mlkit.vision.face.FaceDetectorOptions
 import kotlinx.coroutines.*
@@ -77,6 +79,12 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     @Volatile private var eyeStateDetectedInWindow = false
     @Volatile private var eyesOpenDetectedInWindow = false
     @Volatile private var eyesClosedDetectedInWindow = false
+    @Volatile private var analyzedFrameCount = 0
+    @Volatile private var candidateFaceCount = 0
+    @Volatile private var rejectedCandidateFaceCount = 0
+    @Volatile private var reliableFaceFrameCount = 0
+    @Volatile private var stableOpenEyeFrameCount = 0
+    @Volatile private var stableClosedEyeFrameCount = 0
     private var serviceCreatedAtElapsed = 0L
     private var consecutiveOpenEyeChecks = 0
     private val triggered = AtomicBoolean(false)
@@ -402,12 +410,12 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 } else if (!result.first && screenInteractive && targetAppForeground &&
                     !triggered.get() && stillSince > 0L &&
                     SystemClock.elapsedRealtime() - stillSince >= PHONE_STILL_REQUIRED_MS) {
-                    updateNotification("连续30秒未检测到人脸；判定睡眠并执行保护")
+                    updateNotification("连续30秒未检测到可靠人脸；判定睡眠并执行保护")
                     if (triggered.compareAndSet(false, true)) performProtection()
                 } else if (result.first && !result.third && screenInteractive && targetAppForeground &&
                     !triggered.get() && stillSince > 0L &&
                     SystemClock.elapsedRealtime() - stillSince >= PHONE_STILL_REQUIRED_MS) {
-                    updateNotification("连续30秒检测到人脸但始终无法识别双眼；判定睡眠并执行保护")
+                    updateNotification("连续30秒检测到可靠人脸但始终无法取得双眼有效概率；判定睡眠并执行保护")
                     if (triggered.compareAndSet(false, true)) performProtection()
                 }
             } catch (e: CancellationException) {
@@ -423,8 +431,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     roundFailure != null -> "摄像头检测异常：${roundFailure}"
                     result == null -> "未取得检测结果"
                     !result.second -> "摄像头窗口内没有取得有效分析画面"
-                    !result.first -> "本轮没有检测到人脸，但最终保护条件未同时满足（可能是手机活动或前台状态变化）"
-                    !result.third -> "检测到人脸，但没有取得双眼开合概率"
+                    !result.first -> "本轮没有检测到通过结构校验的可靠人脸；最终保护条件未同时满足（可能是手机活动或前台状态变化）"
+                    !result.third -> "检测到可靠人脸，但整个窗口没有取得双眼有效概率"
                     eyesOpenDetectedInWindow -> "检测到眼睛睁开；本轮未满足持续闭眼条件"
                     eyesClosedDetectedInWindow -> "检测到闭眼，但持续时间未达到3秒"
                     stillSince == 0L || stillFor < PHONE_STILL_REQUIRED_MS -> "确认期间手机发生移动或静止时间不足"
@@ -437,7 +445,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     3 -> 25
                     else -> 30
                 }
-                SleepMateLog.add(this@ProtectionService, "本轮未确认睡眠；原因=${reason}；有效画面=${result?.second}；检测到人脸=${result?.first}；取得眼部概率=${result?.third}；检测到睁眼=${eyesOpenDetectedInWindow}；检测到闭眼=${eyesClosedDetectedInWindow}；手机静止时长=${stillFor}毫秒；下次复查约${minutes}分钟后")
+                SleepMateLog.add(this@ProtectionService, "本轮未确认睡眠；原因=${reason}；有效画面=${result?.second}；可靠人脸=${result?.first}；取得双眼有效概率=${result?.third}；候选脸帧数=${candidateFaceCount}；拒绝候选脸数=${rejectedCandidateFaceCount}；可靠人脸帧数=${reliableFaceFrameCount}；有效分析帧数=${analyzedFrameCount}；稳定睁眼帧数=${stableOpenEyeFrameCount}；稳定闭眼帧数=${stableClosedEyeFrameCount}；手机静止时长=${stillFor}毫秒；下次复查约${minutes}分钟后")
                 updateNotification("本轮未确认睡眠；约${minutes}分钟后复查")
                 scheduleDetection(minutes * 60_000L)
             }
@@ -450,6 +458,12 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         eyeStateDetectedInWindow = false
         eyesOpenDetectedInWindow = false
         eyesClosedDetectedInWindow = false
+        analyzedFrameCount = 0
+        candidateFaceCount = 0
+        rejectedCandidateFaceCount = 0
+        reliableFaceFrameCount = 0
+        stableOpenEyeFrameCount = 0
+        stableClosedEyeFrameCount = 0
         val windowId = ++cameraWindowId
         var analysis: ImageAnalysis? = null
         var provider: ProcessCameraProvider? = null
@@ -496,7 +510,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         if (detectorClosing.get()) return@synchronized null
         val activeDetector = detector ?: run {
             val options = FaceDetectorOptions.Builder()
-                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
+                .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
                 .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
                 .enableTracking()
                 .build()
@@ -504,6 +519,40 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         }
         inFlightDetectorTasks.incrementAndGet()
         activeDetector
+    }
+
+    // Reject obvious false-positive boxes without requiring a fixed screen position,
+    // frontal pose, or a particular face size. A profile may expose only one eye;
+    // at least one eye landmark plus a nose or mouth landmark is therefore enough.
+    private fun isStructurallyPlausibleFace(face: Face, imageWidth: Int, imageHeight: Int): Boolean {
+        val box = face.boundingBox
+        if (imageWidth <= 0 || imageHeight <= 0 || box.width() < 1 || box.height() < 1) return false
+        if (box.width() > imageWidth * 1.05f || box.height() > imageHeight * 1.05f) return false
+        val ratio = box.width().toFloat() / box.height().toFloat()
+        if (ratio !in 0.35f..2.2f) return false
+
+        val leftEye = face.getLandmark(FaceLandmark.LEFT_EYE)?.position
+        val rightEye = face.getLandmark(FaceLandmark.RIGHT_EYE)?.position
+        val nose = face.getLandmark(FaceLandmark.NOSE_BASE)?.position
+        val mouth = face.getLandmark(FaceLandmark.MOUTH_BOTTOM)?.position
+        val eyePoints = listOfNotNull(leftEye, rightEye)
+        if (eyePoints.isEmpty() || (nose == null && mouth == null)) return false
+
+        val marginX = (box.width() * 0.18f).coerceAtLeast(3f)
+        val marginY = (box.height() * 0.18f).coerceAtLeast(3f)
+        val minX = box.left - marginX
+        val maxX = box.right + marginX
+        val minY = box.top - marginY
+        val maxY = box.bottom + marginY
+        val landmarks = eyePoints + listOfNotNull(nose, mouth)
+        if (landmarks.any { it.x < minX || it.x > maxX || it.y < minY || it.y > maxY }) return false
+
+        // Require the lower-face anchor to sit below the eye line, but allow a
+        // generous range for tilted heads and non-frontal viewing angles.
+        val eyeY = eyePoints.map { it.y }.average().toFloat()
+        val lowerAnchor = nose ?: mouth!!
+        if (lowerAnchor.y <= eyeY - box.height() * 0.08f) return false
+        return true
     }
 
     private fun finishDetectorTask() {
@@ -548,15 +597,40 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 .addOnSuccessListener(cameraExecutor) { faces ->
                     if (windowId != cameraWindowId || !screenInteractive || !targetAppForeground || triggered.get()) return@addOnSuccessListener
                     validFrameAnalyzedInWindow = true
-                    if (faces.isNotEmpty()) faceDetectedInWindow = true
-                    val face = faces.firstOrNull()
-                    val left = face?.leftEyeOpenProbability
-                    val right = face?.rightEyeOpenProbability
+                    analyzedFrameCount++
+                    candidateFaceCount += faces.size
+                    val reliableFaces = faces.filter {
+                        isStructurallyPlausibleFace(it, proxy.width, proxy.height)
+                    }
+                    rejectedCandidateFaceCount += faces.size - reliableFaces.size
+                    if (reliableFaces.isNotEmpty()) {
+                        faceDetectedInWindow = true
+                        reliableFaceFrameCount++
+                    }
+
+                    // Prefer the largest structurally valid face; do not assume the
+                    // first ML Kit result is the person looking at the phone.
+                    val faceWithEyes = reliableFaces
+                        .filter { f ->
+                            val l = f.leftEyeOpenProbability
+                            val r = f.rightEyeOpenProbability
+                            l != null && r != null && l in 0f..1f && r in 0f..1f
+                        }
+                        .maxByOrNull { it.boundingBox.width().toLong() * it.boundingBox.height().toLong() }
+                    val left = faceWithEyes?.leftEyeOpenProbability
+                    val right = faceWithEyes?.rightEyeOpenProbability
                     if (left != null && right != null) {
                         eyeStateDetectedInWindow = true
                         val eyesClosed = left < 0.25f && right < 0.25f
-                        if (eyesClosed) eyesClosedDetectedInWindow = true else eyesOpenDetectedInWindow = true
+                        if (eyesClosed) {
+                            stableClosedEyeFrameCount++
+                            if (stableClosedEyeFrameCount >= 2) eyesClosedDetectedInWindow = true
+                        } else {
+                            stableOpenEyeFrameCount++
+                            if (stableOpenEyeFrameCount >= 2) eyesOpenDetectedInWindow = true
+                        }
                     }
+
                     val closed = left != null && right != null && left < 0.25f && right < 0.25f
                     val now = SystemClock.elapsedRealtime()
                     if (closed) {
