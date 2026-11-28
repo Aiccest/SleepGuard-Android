@@ -599,8 +599,11 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     validFrameAnalyzedInWindow = true
                     analyzedFrameCount++
                     candidateFaceCount += faces.size
+                    val rotation = proxy.imageInfo.rotationDegrees
+                    val orientedWidth = if (rotation == 90 || rotation == 270) proxy.height else proxy.width
+                    val orientedHeight = if (rotation == 90 || rotation == 270) proxy.width else proxy.height
                     val reliableFaces = faces.filter {
-                        isStructurallyPlausibleFace(it, proxy.width, proxy.height)
+                        isStructurallyPlausibleFace(it, orientedWidth, orientedHeight)
                     }
                     rejectedCandidateFaceCount += faces.size - reliableFaces.size
                     if (reliableFaces.isNotEmpty()) {
