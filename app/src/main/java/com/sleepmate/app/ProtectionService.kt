@@ -689,7 +689,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     val mpAcceptedIndexes = try {
                         val bitmap = proxy.toBitmap()
                         try {
-                            getFaceValidationEngine().validateFrame(bitmap, faces, orientedWidth, orientedHeight)
+                            getFaceValidationEngine().validateFrame(bitmap, proxy.imageInfo.rotationDegrees, faces, orientedWidth, orientedHeight)
                         } finally {
                             bitmap.recycle()
                         }
