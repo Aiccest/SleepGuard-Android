@@ -483,7 +483,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         var provider: ProcessCameraProvider? = null
         try {
             val cameraPermissionGranted = checkSelfPermission(android.Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-            SleepMateLog.add(this, "摄像头审计：准备获取CameraProvider；window=$windowId；CAMERA权限已授权=$cameraPermissionGranted；前置摄像头可用性=${CameraSelector.DEFAULT_FRONT_CAMERA.let { selector -> try { ProcessCameraProvider.getInstance(this).get().hasCamera(selector) } catch (_: Exception) { false } }}")
+            SleepMateLog.add(this, "摄像头审计：准备获取CameraProvider；window=$windowId；CAMERA权限已授权=$cameraPermissionGranted")
             if (!cameraPermissionGranted) throw SecurityException("CAMERA permission not granted")
             val future = ProcessCameraProvider.getInstance(this)
             val resolvedProvider = suspendCancellableCoroutine<ProcessCameraProvider> { cont ->
@@ -496,6 +496,9 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 }, cameraExecutor)
             }
             provider = resolvedProvider
+            val frontCameraAvailable = resolvedProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
+            SleepMateLog.add(this, "摄像头审计：CameraProvider已就绪；window=$windowId；前置摄像头可用=$frontCameraAvailable")
+            if (!frontCameraAvailable) throw IllegalStateException("Front camera is unavailable")
             val imageAnalysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
