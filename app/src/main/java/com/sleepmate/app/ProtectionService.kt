@@ -623,10 +623,6 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             if (!detectorClosing.get() || inFlightDetectorTasks.get() != 0) return
             detector?.close()
             detector = null
-            synchronized(faceValidationLock) {
-                faceValidationEngine?.close()
-                faceValidationEngine = null
-            }
             // shutdown() drains already queued analyzer/completion callbacks; it does
             // not interrupt an ML Kit operation that is still running.
             cameraExecutor.shutdown()
