@@ -207,7 +207,6 @@ private fun SleepGuardApp(activity: MainActivity) {
                     onStrategy = { screen = Screen.STRATEGY.name },
                     onAbout = { screen = Screen.ABOUT.name },
                     onLogs = { screen = Screen.LOGS.name },
-                    onFaceValidation = { activity.startActivity(Intent(activity, FaceValidationDemoActivity::class.java)) },
                     onTestLock = {
                         activity.refreshPermissions()
                         if (activity.adminActive) {
@@ -340,7 +339,6 @@ private fun SettingsScreen(
     onStrategy: () -> Unit,
     onAbout: () -> Unit,
     onLogs: () -> Unit,
-    onFaceValidation: () -> Unit,
     onTestLock: () -> Unit
 ) {
     Column(Modifier.fillMaxSize()) {
@@ -353,7 +351,6 @@ private fun SettingsScreen(
             SettingsEntry("低功耗监测策略", "查看检测流程、触发条件和时间安排", onStrategy)
             SettingsEntry("关于 SleepMate", "项目介绍、版本信息、开源协议", onAbout)
             SettingsEntry("运行日志", "查看前台应用监测、异常恢复与返回桌面诊断记录", onLogs)
-            SettingsEntry("双模型人脸验证实验", "同时查看 ML Kit 与 MediaPipe 的识别结果（实验功能）", onFaceValidation)
             Spacer(Modifier.height(8.dp))
             Text("辅助功能", style = MaterialTheme.typography.titleMedium)
             OutlinedButton(onClick = onTestLock, modifier = Modifier.fillMaxWidth()) { Text("测试锁屏") }
