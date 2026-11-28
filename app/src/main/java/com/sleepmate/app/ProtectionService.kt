@@ -100,6 +100,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     @Volatile private var cameraLastFrameArrivalElapsedNs = 0L
     @Volatile private var cameraMaxFrameGapMs = 0L
     @Volatile private var cameraDiagnosticFrameSaved = false
+    @Volatile private var earDiagnosticSamplesInWindow = 0
     @Volatile private var faceValidationFailedInWindow = false
     private var serviceCreatedAtElapsed = 0L
     private var consecutiveOpenEyeChecks = 0
@@ -487,6 +488,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         cameraLastFrameArrivalElapsedNs = 0L
         cameraMaxFrameGapMs = 0L
         cameraDiagnosticFrameSaved = false
+        earDiagnosticSamplesInWindow = 0
         faceValidationFailedInWindow = false
         val windowId = ++cameraWindowId
         var analysis: ImageAnalysis? = null
@@ -682,6 +684,17 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     val rotation = proxy.imageInfo.rotationDegrees
                     val orientedWidth = if (rotation == 90 || rotation == 270) proxy.height else proxy.width
                     val orientedHeight = if (rotation == 90 || rotation == 270) proxy.width else proxy.height
+                    // EAR diagnostics are sampled sparsely and are strictly observational:
+                    // they do not alter contourAcceptedIndexes or any ABC sleep decision.
+                    if (faces.isNotEmpty() && earDiagnosticSamplesInWindow < 3 &&
+                        (analyzedFrameCount == 1 || analyzedFrameCount % 10 == 0)) {
+                        earDiagnosticSamplesInWindow++
+                        val earSnapshot = getFaceValidationEngine().diagnosticSnapshot(faces)
+                        SleepMateLog.add(
+                            this@ProtectionService,
+                            "[EAR_TEST] window=$windowId; sample=$earDiagnosticSamplesInWindow; frame=$analyzedFrameCount; image=${orientedWidth}x${orientedHeight}; rotation=$rotation; $earSnapshot"
+                        )
+                    }
                     val contourAcceptedIndexes = try {
                         getFaceValidationEngine().validateFrame(faces, orientedWidth, orientedHeight)
                     } catch (validationError: Exception) {
