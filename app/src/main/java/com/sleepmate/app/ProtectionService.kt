@@ -8,6 +8,7 @@ import android.app.admin.DevicePolicyManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
+import android.content.pm.PackageManager
 import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.Sensor
@@ -25,6 +26,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import android.view.KeyEvent
+import androidx.camera.core.CameraState
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -85,6 +87,12 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     @Volatile private var reliableFaceFrameCount = 0
     @Volatile private var stableOpenEyeFrameCount = 0
     @Volatile private var stableClosedEyeFrameCount = 0
+    @Volatile private var cameraFramesReceived = 0
+    @Volatile private var cameraDuplicateTimestampFrames = 0
+    @Volatile private var cameraLastFrameTimestampNs = -1L
+    @Volatile private var cameraFirstFrameTimestampNs = -1L
+    @Volatile private var cameraLastFrameArrivalElapsedNs = 0L
+    @Volatile private var cameraMaxFrameGapMs = 0L
     private var serviceCreatedAtElapsed = 0L
     private var consecutiveOpenEyeChecks = 0
     private val triggered = AtomicBoolean(false)
@@ -464,10 +472,19 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         reliableFaceFrameCount = 0
         stableOpenEyeFrameCount = 0
         stableClosedEyeFrameCount = 0
+        cameraFramesReceived = 0
+        cameraDuplicateTimestampFrames = 0
+        cameraLastFrameTimestampNs = -1L
+        cameraFirstFrameTimestampNs = -1L
+        cameraLastFrameArrivalElapsedNs = 0L
+        cameraMaxFrameGapMs = 0L
         val windowId = ++cameraWindowId
         var analysis: ImageAnalysis? = null
         var provider: ProcessCameraProvider? = null
         try {
+            val cameraPermissionGranted = checkSelfPermission(android.Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+            SleepMateLog.add(this, "摄像头审计：准备获取CameraProvider；window=$windowId；CAMERA权限已授权=$cameraPermissionGranted；前置摄像头可用性=${CameraSelector.DEFAULT_FRONT_CAMERA.let { selector -> try { ProcessCameraProvider.getInstance(this).get().hasCamera(selector) } catch (_: Exception) { false } }}")
+            if (!cameraPermissionGranted) throw SecurityException("CAMERA permission not granted")
             val future = ProcessCameraProvider.getInstance(this)
             val resolvedProvider = suspendCancellableCoroutine<ProcessCameraProvider> { cont ->
                 future.addListener({
@@ -485,11 +502,15 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             analysis = imageAnalysis
             activeImageAnalysis = imageAnalysis
             imageAnalysis.setAnalyzer(cameraExecutor) { proxy -> analyzeFrame(proxy, windowId) }
-            withContext(Dispatchers.Main) {
+            val boundCamera = withContext(Dispatchers.Main) {
                 resolvedProvider.bindToLifecycle(this@ProtectionService, CameraSelector.DEFAULT_FRONT_CAMERA, imageAnalysis)
             }
+            val initialCameraState = boundCamera.cameraInfo.cameraState.value
+            SleepMateLog.add(this, "摄像头审计：bindToLifecycle已返回；window=$windowId；cameraState=${initialCameraState?.type}；cameraError=${initialCameraState?.error?.code}:${initialCameraState?.error?.cause?.javaClass?.simpleName}；resolution=${imageAnalysis.resolutionInfo?.resolution}")
             delay(CAMERA_WINDOW_MS)
-            Triple(faceDetectedInWindow, validFrameAnalyzedInWindow, eyeStateDetectedInWindow)
+            val result = Triple(faceDetectedInWindow, validFrameAnalyzedInWindow, eyeStateDetectedInWindow)
+            SleepMateLog.add(this, "摄像头审计：30秒窗口结束；window=$windowId；收到帧数=$cameraFramesReceived；重复时间戳帧=$cameraDuplicateTimestampFrames；分析成功帧=$analyzedFrameCount；首帧时间戳=$cameraFirstFrameTimestampNs；末帧时间戳=$cameraLastFrameTimestampNs；最大帧间隔=${cameraMaxFrameGapMs}毫秒；可靠脸=${result.first}；有效分析=${result.second}；取得眼概率=${result.third}")
+            result
         } finally {
             // The mutex keeps a new camera window from binding until this window's own
             // analyzer and use case have been detached. Never unbind another window's use cases.
@@ -501,6 +522,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     if (activeImageAnalysis === useCase) activeImageAnalysis = null
                 }
             }
+            SleepMateLog.add(this, "摄像头审计：本窗口use case已解除绑定；window=$windowId；收到帧数=$cameraFramesReceived；有效分析帧=$analyzedFrameCount")
         }
     }
 
@@ -586,6 +608,18 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             return
         }
         try {
+            val frameTimestampNs = proxy.imageInfo.timestamp
+            val frameArrivalElapsedNs = SystemClock.elapsedRealtimeNanos()
+            cameraFramesReceived++
+            if (cameraFirstFrameTimestampNs < 0L) cameraFirstFrameTimestampNs = frameTimestampNs
+            if (frameTimestampNs == cameraLastFrameTimestampNs) cameraDuplicateTimestampFrames++
+            if (cameraLastFrameArrivalElapsedNs > 0L) {
+                val gapMs = ((frameArrivalElapsedNs - cameraLastFrameArrivalElapsedNs).coerceAtLeast(0L)) / 1_000_000L
+                if (gapMs > cameraMaxFrameGapMs) cameraMaxFrameGapMs = gapMs
+            }
+            cameraLastFrameTimestampNs = frameTimestampNs
+            cameraLastFrameArrivalElapsedNs = frameArrivalElapsedNs
+            if (cameraFramesReceived == 1) SleepMateLog.add(this, "摄像头审计：收到首帧；window=$windowId；timestampNs=$frameTimestampNs；尺寸=${proxy.width}x${proxy.height}；rotation=${proxy.imageInfo.rotationDegrees}；format=${proxy.format}")
             val mediaImage = proxy.image
             if (mediaImage == null) {
                 proxy.close()
@@ -650,6 +684,10 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                         eyesClosedSince = 0L
                     }
                 }
+                .addOnFailureListener(cameraExecutor) { error ->
+                    SleepMateLog.add(this, "图像分析任务失败；window=$windowId；异常=${error.javaClass.simpleName}:${error.message}")
+                    Log.e(TAG, "ML Kit frame processing failed", error)
+                }
                 .addOnCompleteListener(cameraExecutor) {
                     try {
                         proxy.close()
@@ -657,7 +695,9 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                         finishDetectorTask()
                     }
                 }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            SleepMateLog.add(this, "图像帧提交/读取异常；window=$windowId；异常=${e.javaClass.simpleName}:${e.message}")
+            Log.e(TAG, "Image frame submission failed", e)
             // Submission can fail before a Task is returned; release both resources.
             try {
                 proxy.close()
