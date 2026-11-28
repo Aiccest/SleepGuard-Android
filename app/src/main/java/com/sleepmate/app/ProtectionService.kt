@@ -24,6 +24,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
+import android.view.KeyEvent
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -561,9 +562,21 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             triggered.set(false)
             return
         }
-        updateNotification("确认符合睡眠条件；正在锁定屏幕")
+        updateNotification("确认符合睡眠条件；正在尝试暂停媒体")
         detectionJob?.cancel()
         unregisterMotionSensor()
+
+        // Media pause is best-effort. A player may not expose a media-button
+        // receiver; that must never block HOME or the device-admin lock.
+        try {
+            pauseForegroundMediaBestEffort()
+            delay(MEDIA_PAUSE_SETTLE_MS)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Media pause attempt failed; continuing protection flow", e)
+            SleepMateLog.add(this, "主动暂停媒体尝试失败：${e.javaClass.simpleName}: ${e.message}；继续返回桌面和锁屏")
+        }
         if (!screenInteractive || !power.isInteractive || !targetAppForeground) {
             triggered.set(false)
             return
@@ -655,6 +668,33 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             else
                 "未确认返回桌面；设备管理员未启用，本次无法自动锁屏")
         }
+    }
+
+    private fun pauseForegroundMediaBestEffort() {
+        val selectedPackages = MediaAppPreferences.getSelectedPackages(this)
+        val targetPackage = lastForegroundPackage?.takeIf { it in selectedPackages }
+        if (targetPackage == null) {
+            SleepMateLog.add(this, "当前前台应用不在所选媒体应用列表中；跳过定向暂停广播，继续保护流程")
+            return
+        }
+
+        val down = Intent(Intent.ACTION_MEDIA_BUTTON)
+            .setPackage(targetPackage)
+            .putExtra(
+                Intent.EXTRA_KEY_EVENT,
+                KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PAUSE)
+            )
+        val up = Intent(Intent.ACTION_MEDIA_BUTTON)
+            .setPackage(targetPackage)
+            .putExtra(
+                Intent.EXTRA_KEY_EVENT,
+                KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PAUSE)
+            )
+
+        sendOrderedBroadcast(down, null)
+        sendOrderedBroadcast(up, null)
+        SleepMateLog.add(this, "已向当前前台媒体应用发送MEDIA_PAUSE按键广播：$targetPackage；播放器是否响应由应用自身决定")
+        updateNotification("已发送媒体暂停指令；正在返回桌面")
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
@@ -761,6 +801,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         private const val MAX_REMEMBERED_USAGE_EVENTS = 128
         private const val MONITOR_HEARTBEAT_LOG_INTERVAL_MS = 60_000L
         private const val CAMERA_WINDOW_MS = 30_000L
+        private const val MEDIA_PAUSE_SETTLE_MS = 250L
         private const val MOVEMENT_THRESHOLD = 1.0f
         private const val TAG = "SleepMate"
         private const val CHANNEL_ID = "sleepguard_protection"
