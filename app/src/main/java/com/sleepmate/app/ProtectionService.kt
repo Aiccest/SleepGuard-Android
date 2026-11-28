@@ -28,6 +28,7 @@ import android.util.Log
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import androidx.camera.core.toBitmap
 import android.view.KeyEvent
 import androidx.camera.core.CameraState
 import androidx.camera.core.ImageAnalysis
@@ -62,6 +63,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     private val detectorLock = Any()
     private val detectorClosing = AtomicBoolean(false)
     private val inFlightDetectorTasks = AtomicInteger(0)
+    @Volatile private var faceValidationEngine: FaceValidationEngine? = null
+    private val faceValidationLock = Any()
     @Volatile private var activeImageAnalysis: ImageAnalysis? = null
     private lateinit var sensorManager: SensorManager
     private lateinit var usageStatsManager: UsageStatsManager
@@ -552,6 +555,10 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     // A detector task outlives the coroutine that opened the camera window. Keep
     // the detector and its executor alive until every submitted ML Kit Task completes.
+    private fun getFaceValidationEngine(): FaceValidationEngine = synchronized(faceValidationLock) {
+        faceValidationEngine ?: FaceValidationEngine(this).also { faceValidationEngine = it }
+    }
+
     private fun beginDetectorTask(): FaceDetector? = synchronized(detectorLock) {
         if (detectorClosing.get()) return@synchronized null
         val activeDetector = detector ?: run {
@@ -674,8 +681,16 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     val rotation = proxy.imageInfo.rotationDegrees
                     val orientedWidth = if (rotation == 90 || rotation == 270) proxy.height else proxy.width
                     val orientedHeight = if (rotation == 90 || rotation == 270) proxy.width else proxy.height
-                    val reliableFaces = faces.filter {
-                        isStructurallyPlausibleFace(it, orientedWidth, orientedHeight)
+                    val mpAcceptedIndexes = try {
+                        val bitmap = proxy.toBitmap()
+                        getFaceValidationEngine().validateFrame(bitmap, faces, orientedWidth, orientedHeight)
+                    } catch (validationError: Exception) {
+                        SleepMateLog.add(this@ProtectionService, "MediaPipe验证失败；本帧不采纳任何候选脸，且不将模型异常当作无人脸；异常=${validationError.javaClass.simpleName}:${validationError.message}")
+                        Log.e(TAG, "MediaPipe face validation failed", validationError)
+                        emptySet()
+                    }
+                    val reliableFaces = faces.filterIndexed { index, face ->
+                        mpAcceptedIndexes.contains(index) && isStructurallyPlausibleFace(face, orientedWidth, orientedHeight)
                     }
                     rejectedCandidateFaceCount += faces.size - reliableFaces.size
                     if (reliableFaces.isNotEmpty()) {
@@ -915,6 +930,10 @@ class ProtectionService : LifecycleService(), SensorEventListener {
             detectorClosing.set(true)
         }
         closeDetectorIfIdle()
+        synchronized(faceValidationLock) {
+            faceValidationEngine?.close()
+            faceValidationEngine = null
+        }
         super.onDestroy()
     }
 
