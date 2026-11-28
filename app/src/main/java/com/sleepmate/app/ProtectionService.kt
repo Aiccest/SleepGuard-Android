@@ -557,7 +557,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     // A detector task outlives the coroutine that opened the camera window. Keep
     // the detector and its executor alive until every submitted ML Kit Task completes.
     private fun getFaceValidationEngine(): FaceValidationEngine = synchronized(faceValidationLock) {
-        faceValidationEngine ?: FaceValidationEngine(this).also { faceValidationEngine = it }
+        faceValidationEngine ?: FaceValidationEngine().also { faceValidationEngine = it }
     }
 
     private fun beginDetectorTask(): FaceDetector? = synchronized(detectorLock) {
@@ -567,7 +567,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
                 .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
                 .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
-                .enableTracking()
+                .setContourMode(FaceDetectorOptions.CONTOUR_MODE_ALL)
                 .build()
             FaceDetection.getClient(options).also { detector = it }
         }
@@ -686,21 +686,16 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     val rotation = proxy.imageInfo.rotationDegrees
                     val orientedWidth = if (rotation == 90 || rotation == 270) proxy.height else proxy.width
                     val orientedHeight = if (rotation == 90 || rotation == 270) proxy.width else proxy.height
-                    val mpAcceptedIndexes = try {
-                        val bitmap = proxy.toBitmap()
-                        try {
-                            getFaceValidationEngine().validateFrame(bitmap, proxy.imageInfo.rotationDegrees, faces, orientedWidth, orientedHeight)
-                        } finally {
-                            bitmap.recycle()
-                        }
+                    val contourAcceptedIndexes = try {
+                        getFaceValidationEngine().validateFrame(faces, orientedWidth, orientedHeight)
                     } catch (validationError: Exception) {
                         faceValidationFailedInWindow = true
-                        SleepMateLog.add(this@ProtectionService, "MediaPipe验证失败；本轮不作B/C睡眠判断；异常=${validationError.javaClass.simpleName}:${validationError.message}")
-                        Log.e(TAG, "MediaPipe face validation failed", validationError)
+                        SleepMateLog.add(this@ProtectionService, "ML Kit轮廓几何验证异常；本轮不作B/C睡眠判断；异常=${validationError.javaClass.simpleName}:${validationError.message}")
+                        Log.e(TAG, "ML Kit contour validation failed", validationError)
                         emptySet()
                     }
                     val reliableFaces = faces.filterIndexed { index, face ->
-                        mpAcceptedIndexes.contains(index) && isStructurallyPlausibleFace(face, orientedWidth, orientedHeight)
+                        contourAcceptedIndexes.contains(index) && isStructurallyPlausibleFace(face, orientedWidth, orientedHeight)
                     }
                     rejectedCandidateFaceCount += faces.size - reliableFaces.size
                     if (reliableFaces.isNotEmpty()) {
