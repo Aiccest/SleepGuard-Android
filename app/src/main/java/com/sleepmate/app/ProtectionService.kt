@@ -748,7 +748,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     }
                 }
                 .addOnFailureListener(cameraExecutor) { error ->
-                    SleepMateLog.add(this, "图像分析任务失败；window=$windowId；异常=${error.javaClass.simpleName}:${error.message}")
+                    faceValidationFailedInWindow = true
+                    SleepMateLog.add(this, "图像分析任务失败；本轮不作B/C睡眠判断；window=$windowId；异常=${error.javaClass.simpleName}:${error.message}")
                     Log.e(TAG, "ML Kit frame processing failed", error)
                 }
                 .addOnCompleteListener(cameraExecutor) {
