@@ -75,6 +75,9 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     @Volatile private var faceDetectedInWindow = false
     @Volatile private var validFrameAnalyzedInWindow = false
     @Volatile private var eyeStateDetectedInWindow = false
+    @Volatile private var eyesOpenDetectedInWindow = false
+    @Volatile private var eyesClosedDetectedInWindow = false
+    private var serviceCreatedAtElapsed = 0L
     private var consecutiveOpenEyeChecks = 0
     private val triggered = AtomicBoolean(false)
     @Volatile private var screenInteractive = true
@@ -113,7 +116,17 @@ class ProtectionService : LifecycleService(), SensorEventListener {
 
     override fun onCreate() {
         super.onCreate()
-        SleepMateLog.add(this, "服务实例创建；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；期望保持开启=${isProtectionDesired(this)}；说明=等待系统调用onStartCommand后再决定是否启动前台服务")
+        serviceCreatedAtElapsed = SystemClock.elapsedRealtime()
+        val instanceId = System.identityHashCode(this)
+        val lifecyclePrefs = getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+        val previousInstanceId = lifecyclePrefs.getInt("last_service_instance", 0)
+        val previousPid = lifecyclePrefs.getInt("last_service_pid", -1)
+        val previousCreatedAt = lifecyclePrefs.getLong("last_service_created_at", 0L)
+        if (previousInstanceId != 0) {
+            SleepMateLog.add(this, "检测到上一次服务实例记录；previousInstance=$previousInstanceId；previousPid=$previousPid；previousCreatedElapsed=$previousCreatedAt；currentInstance=$instanceId；currentPid=${Process.myPid()}；pidChanged=${previousPid != Process.myPid()}；说明=记录可确认实例变化，但不能单凭此记录确定系统回收原因")
+        }
+        lifecyclePrefs.edit().putInt("last_service_instance", instanceId).putInt("last_service_pid", Process.myPid()).putLong("last_service_created_at", serviceCreatedAtElapsed).apply()
+        SleepMateLog.add(this, "服务实例创建；instance=$instanceId；pid=${Process.myPid()}；elapsedRealtime=$serviceCreatedAtElapsed；期望保持开启=${isProtectionDesired(this)}；说明=等待系统调用onStartCommand后再决定是否启动前台服务")
         createNotificationChannel()
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
@@ -133,10 +146,11 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         // from this newly-created instance instead of waiting for MainActivity to open.
         android.os.Handler(mainLooper).postDelayed({
             if (lastStartId == 0 && isProtectionDesired(this) && !running.value) {
-                SleepMateLog.add(this, "服务实例创建后未收到onStartCommand；期望保持开启=true；主动补发一次RECOVER启动请求")
+                SleepMateLog.add(this, "服务恢复诊断：实例创建250毫秒后仍未收到onStartCommand；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；running=${running.value}；期望保持开启=true；动作=主动补发一次RECOVER启动请求")
                 startRequestPending.set(false)
                 try {
                     requestServiceStart(this, ACTION_RECOVER)
+                    SleepMateLog.add(this, "服务恢复请求已提交；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；action=$ACTION_RECOVER")
                 } catch (e: Exception) {
                     SleepMateLog.add(this, "实例创建后的RECOVER补发失败：${e.javaClass.simpleName}: ${e.message}")
                     Log.e(TAG, "Deferred service recovery request failed", e)
@@ -150,7 +164,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         startRequestPending.set(false)
         lastStartAction = intent?.action ?: "系统重建（intent=null）"
         lastStartId = startId
-        SleepMateLog.add(this, "onStartCommand进入；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；startId=$startId；action=$lastStartAction；期望保持开启=${isProtectionDesired(this)}；flags=$flags")
+        SleepMateLog.add(this, "onStartCommand进入；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；startId=$startId；action=$lastStartAction；服务实例存活=${SystemClock.elapsedRealtime() - serviceCreatedAtElapsed}毫秒；期望保持开启=${isProtectionDesired(this)}；flags=$flags")
         if (intent?.action == ACTION_STOP) {
             setProtectionDesired(this, false)
             stopSelf()
@@ -198,7 +212,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         }
         if (foregroundMonitorJob?.isActive == true) return
         lastMonitorHeartbeatAt = SystemClock.elapsedRealtime()
-        SleepMateLog.add(this, "前台应用监测循环已启动")
+        SleepMateLog.add(this, "前台应用监测循环已启动；心跳日志间隔=${MONITOR_HEARTBEAT_LOG_INTERVAL_MS / 60_000L}分钟；屏幕亮起=$screenInteractive")
         foregroundMonitorJob = scope.launch {
             while (isActive) {
                 try {
@@ -378,8 +392,11 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         cameraJob = scope.launch {
             eyesClosedSince = 0L
             updateNotification("正在进行短时睡眠确认")
+            var roundResult: Triple<Boolean, Boolean, Boolean>? = null
+            var roundFailure: String? = null
             try {
                 val result = runCameraWindow()
+                roundResult = result
                 if (!result.second) {
                     updateNotification("摄像头未取得有效画面；本轮不作睡眠判断")
                 } else if (!result.first && screenInteractive && targetAppForeground &&
@@ -395,10 +412,24 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                 }
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                roundFailure = "${e.javaClass.simpleName}: ${e.message ?: "无异常详情"}"
                 updateNotification("本轮摄像头检测未能启动；稍后重试")
             }
             if (!triggered.get() && screenInteractive && targetAppForeground && isActive) {
+                val result = roundResult
+                val stillFor = if (stillSince > 0L) SystemClock.elapsedRealtime() - stillSince else 0L
+                val reason = when {
+                    roundFailure != null -> "摄像头检测异常：${roundFailure}"
+                    result == null -> "未取得检测结果"
+                    !result.second -> "摄像头窗口内没有取得有效分析画面"
+                    !result.first -> "本轮没有检测到人脸，但最终保护条件未同时满足（可能是手机活动或前台状态变化）"
+                    !result.third -> "检测到人脸，但没有取得双眼开合概率"
+                    eyesOpenDetectedInWindow -> "检测到眼睛睁开；本轮未满足持续闭眼条件"
+                    eyesClosedDetectedInWindow -> "检测到闭眼，但持续时间未达到3秒"
+                    stillSince == 0L || stillFor < PHONE_STILL_REQUIRED_MS -> "确认期间手机发生移动或静止时间不足"
+                    else -> "检测到人脸且眼部状态有效，但未达到睡眠判定条件（具体帧状态未能进一步区分）"
+                }
                 consecutiveOpenEyeChecks = (consecutiveOpenEyeChecks + 1).coerceAtMost(4)
                 val minutes = when (consecutiveOpenEyeChecks) {
                     1 -> 15
@@ -406,6 +437,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     3 -> 25
                     else -> 30
                 }
+                SleepMateLog.add(this@ProtectionService, "本轮未确认睡眠；原因=${reason}；有效画面=${result?.second}；检测到人脸=${result?.first}；取得眼部概率=${result?.third}；检测到睁眼=${eyesOpenDetectedInWindow}；检测到闭眼=${eyesClosedDetectedInWindow}；手机静止时长=${stillFor}毫秒；下次复查约${minutes}分钟后")
                 updateNotification("本轮未确认睡眠；约${minutes}分钟后复查")
                 scheduleDetection(minutes * 60_000L)
             }
@@ -416,6 +448,8 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         faceDetectedInWindow = false
         validFrameAnalyzedInWindow = false
         eyeStateDetectedInWindow = false
+        eyesOpenDetectedInWindow = false
+        eyesClosedDetectedInWindow = false
         val windowId = ++cameraWindowId
         var analysis: ImageAnalysis? = null
         var provider: ProcessCameraProvider? = null
@@ -518,7 +552,11 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     val face = faces.firstOrNull()
                     val left = face?.leftEyeOpenProbability
                     val right = face?.rightEyeOpenProbability
-                    if (left != null && right != null) eyeStateDetectedInWindow = true
+                    if (left != null && right != null) {
+                        eyeStateDetectedInWindow = true
+                        val eyesClosed = left < 0.25f && right < 0.25f
+                        if (eyesClosed) eyesClosedDetectedInWindow = true else eyesOpenDetectedInWindow = true
+                    }
                     val closed = left != null && right != null && left < 0.25f && right < 0.25f
                     val now = SystemClock.elapsedRealtime()
                     if (closed) {
@@ -705,7 +743,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     }
 
     override fun onDestroy() {
-        SleepMateLog.add(this, "保护服务 onDestroy；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；lastStartAction=$lastStartAction；lastStartId=$lastStartId；期望保持开启=${isProtectionDesired(this)}；监测循环活动=${foregroundMonitorJob?.isActive == true}；说明=onDestroy本身无法区分系统回收、用户停止或其他销毁原因")
+        SleepMateLog.add(this, "保护服务 onDestroy；instance=${System.identityHashCode(this)}；pid=${Process.myPid()}；服务实例存活=${SystemClock.elapsedRealtime() - serviceCreatedAtElapsed}毫秒；lastStartAction=$lastStartAction；lastStartId=$lastStartId；期望保持开启=${isProtectionDesired(this)}；监测循环活动=${foregroundMonitorJob?.isActive == true}；说明=onDestroy本身无法区分系统回收、用户停止或其他销毁原因")
         running.value = false
         startRequestPending.set(false)
         detectionJob?.cancel()
@@ -799,7 +837,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         private const val INITIAL_USAGE_EVENT_WINDOW_MS = 10_000L
         private const val USAGE_EVENT_OVERLAP_MS = 5_000L
         private const val MAX_REMEMBERED_USAGE_EVENTS = 128
-        private const val MONITOR_HEARTBEAT_LOG_INTERVAL_MS = 60_000L
+        private const val MONITOR_HEARTBEAT_LOG_INTERVAL_MS = 5 * 60_000L
         private const val CAMERA_WINDOW_MS = 30_000L
         private const val MEDIA_PAUSE_SETTLE_MS = 250L
         private const val MOVEMENT_THRESHOLD = 1.0f
