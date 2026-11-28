@@ -17,6 +17,34 @@ import kotlin.math.min
  */
 internal class FaceValidationEngine {
 
+    /**
+     * Diagnostic-only snapshot. It never participates in acceptance decisions.
+     * Coordinates are kept in ML Kit's input-image coordinate space.
+     */
+    fun diagnosticSnapshot(candidates: List<Face>): String {
+        if (candidates.isEmpty()) return "[EAR_TEST] candidates=0"
+        return candidates.take(2).mapIndexed { index, face ->
+            val left = face.getContour(FaceContour.LEFT_EYE)?.points
+            val right = face.getContour(FaceContour.RIGHT_EYE)?.points
+            fun describe(points: List<android.graphics.PointF>?): String {
+                if (points == null) return "missing"
+                val rawEar = if (points.size == EYE_CONTOUR_POINT_COUNT) {
+                    val width = distance(points[0], points[8])
+                    if (width > MIN_EYE_WIDTH_PX) {
+                        val v1 = distance(points[2], points[14])
+                        val v2 = distance(points[3], points[13])
+                        "%.3f".format(java.util.Locale.US, (v1 + v2) / (2f * width))
+                    } else "bad_width"
+                } else "n/a"
+                val coords = points.mapIndexed { i, point ->
+                    "$i:${point.x.toInt()},${point.y.toInt()}"
+                }.joinToString("|")
+                return "count=${points.size},rawEAR=$rawEar,points=[$coords]"
+            }
+            val box = face.boundingBox
+            "face${index + 1}{box=${box.left},${box.top},${box.right},${box.bottom};left={${describe(left)}};right={${describe(right)}}}"
+        }.joinToString(";")
+    }
     fun validateFrame(candidates: List<Face>, frameWidth: Int, frameHeight: Int): Set<Int> {
         if (candidates.isEmpty() || frameWidth <= 0 || frameHeight <= 0) return emptySet()
 
