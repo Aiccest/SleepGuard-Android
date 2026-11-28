@@ -25,6 +25,9 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.view.KeyEvent
 import androidx.camera.core.CameraState
 import androidx.camera.core.ImageAnalysis
@@ -93,6 +96,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
     @Volatile private var cameraFirstFrameTimestampNs = -1L
     @Volatile private var cameraLastFrameArrivalElapsedNs = 0L
     @Volatile private var cameraMaxFrameGapMs = 0L
+    @Volatile private var cameraDiagnosticFrameSaved = false
     private var serviceCreatedAtElapsed = 0L
     private var consecutiveOpenEyeChecks = 0
     private val triggered = AtomicBoolean(false)
@@ -478,6 +482,7 @@ class ProtectionService : LifecycleService(), SensorEventListener {
         cameraFirstFrameTimestampNs = -1L
         cameraLastFrameArrivalElapsedNs = 0L
         cameraMaxFrameGapMs = 0L
+        cameraDiagnosticFrameSaved = false
         val windowId = ++cameraWindowId
         var analysis: ImageAnalysis? = null
         var provider: ProcessCameraProvider? = null
@@ -636,6 +641,20 @@ class ProtectionService : LifecycleService(), SensorEventListener {
                     validFrameAnalyzedInWindow = true
                     analyzedFrameCount++
                     candidateFaceCount += faces.size
+                    if (faces.isNotEmpty() && !cameraDiagnosticFrameSaved) {
+                        cameraDiagnosticFrameSaved = true
+                        try {
+                            val saved = CameraDiagnosticCapture.saveLatest(this@ProtectionService, proxy)
+                            val faceDetails = faces.take(3).mapIndexed { index, face ->
+                                val box = face.boundingBox
+                                "face" + (index + 1) + "{box=" + box.left + "," + box.top + "," + box.right + "," + box.bottom + ";leftEye=" + face.leftEyeOpenProbability + ";rightEye=" + face.rightEyeOpenProbability + ";eulerX=" + face.headEulerAngleX + ";eulerY=" + face.headEulerAngleY + ";eulerZ=" + face.headEulerAngleZ + ";trackingId=" + face.trackingId + "}"
+                            }.joinToString(";")
+                            SleepMateLog.add(this@ProtectionService, "假脸诊断样本已保存；window=" + windowId + "；文件=" + saved + "；rotation=" + proxy.imageInfo.rotationDegrees + "；候选数=" + faces.size + "；" + faceDetails)
+                        } catch (captureError: Exception) {
+                            SleepMateLog.add(this@ProtectionService, "假脸诊断样本保存失败；window=" + windowId + "；异常=" + captureError.javaClass.simpleName + ":" + captureError.message)
+                            Log.e(TAG, "Failed to save face diagnostic frame", captureError)
+                        }
+                    }
                     val rotation = proxy.imageInfo.rotationDegrees
                     val orientedWidth = if (rotation == 90 || rotation == 270) proxy.height else proxy.width
                     val orientedHeight = if (rotation == 90 || rotation == 270) proxy.width else proxy.height
