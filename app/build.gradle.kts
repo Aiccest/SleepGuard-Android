@@ -1,3 +1,7 @@
+import java.io.File
+import java.net.URL
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -63,21 +67,23 @@ val downloadFaceLandmarkerModel by tasks.registering {
     doLast {
         val modelFile = faceLandmarkerModel.asFile
         val expectedSha256 = "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"
-        fun sha256(file: java.io.File): String =
-            java.security.MessageDigest.getInstance("SHA-256")
+        fun sha256(file: File): String =
+            MessageDigest.getInstance("SHA-256")
                 .digest(file.readBytes())
-                .joinToString("") { "%02x".format(it) }
+                .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
 
         if (!modelFile.exists() || sha256(modelFile) != expectedSha256) {
             modelFile.parentFile.mkdirs()
-            val temporaryFile = java.io.File(modelFile.parentFile, modelFile.name + ".part")
+            val temporaryFile = File(modelFile.parentFile, modelFile.name + ".part")
             temporaryFile.delete()
-            val url = java.net.URL("https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task")
-            url.openConnection().apply {
-                connectTimeout = 30_000
-                readTimeout = 60_000
-            }.getInputStream().use { input ->
-                temporaryFile.outputStream().use { output -> input.copyTo(output) }
+            val url = URL("https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task")
+            val connection = url.openConnection()
+            connection.connectTimeout = 30_000
+            connection.readTimeout = 60_000
+            connection.getInputStream().use { input ->
+                temporaryFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
             }
             check(sha256(temporaryFile) == expectedSha256) {
                 "MediaPipe model SHA-256 mismatch; refusing to package an unverified model."
